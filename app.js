@@ -67,7 +67,7 @@ async function getEE(p){const{n,s,e,w,nx,ny}=G,T=[(e-w)/nx,0,w,0,-(n-s)/ny,n],re
  if(p.mode==='hind')cont.push(sr(p.sensor,addD(d0,-30),d0,reg).select('nbr').subtract(sr(p.sensor,d1,addD(d1,30),reg).select('nbr')).rename('dn'));
  const c=ee.Image.cat(cont).reproject({crs:'EPSG:4326',scale:p.sensor==='s2'?10:30}).reduceResolution({reducer:ee.Reducer.mean(),maxPixels:65535,bestEffort:true}).reproject({crs:'EPSG:4326',crsTransform:T}),
  d=ee.Image.cat([ee.Image('USGS/SRTMGL1_003').rename('z'),ee.ImageCollection('ESA/WorldCover/v200').first().rename('lc')]).reproject({crs:'EPSG:4326',crsTransform:T});
- const r=await new Promise((ok,no)=>c.addBands(d).sampleRectangle({region:reg,defaultValue:-9999}).getInfo((v,er)=>er?no(Error(er)):ok(v))),o=r.properties,f=k=>o[k]?o[k].flat():null;
+ const r=await new Promise((ok,no)=>c.addBands(d).toFloat().unmask(-9999,false).sampleRectangle({region:reg}).getInfo((v,er)=>er?no(Error(er)):ok(v))),o=r.properties,f=k=>o[k]?o[k].flat():null;
  return{nx:o.z[0].length,ny:o.z.length,z:f('z'),lc:f('lc'),nw:f('nw'),nd:f('nd'),nm:f('nm'),sm:f('sm'),dn:f('dn')}}
 async function loadEE(){const p=P();let r;
  if($('noee').checked){const N=G.N,c=v=>new Array(N).fill(v);r={nx:G.nx,ny:G.ny,z:c(0),lc:c(30),nw:c(.8),nd:c(.2),nm:c(.2),sm:c(.2),dn:null}}
