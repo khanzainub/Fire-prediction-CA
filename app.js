@@ -1,5 +1,9 @@
 'use strict';
-const $=id=>document.getElementById(id),log=t=>$('log').textContent=t,st=t=>$('eestatus').textContent=t;
+const $=id=>document.getElementById(id),st=t=>$('eestatus').textContent=t;
+const LOGS=[];function note(k,m){LOGS.push(new Date().toLocaleTimeString()+'  '+k+'  '+m);if(LOGS.length>400)LOGS.shift();const e=$('elog');if(e){e.textContent=LOGS.join('\n');e.scrollTop=e.scrollHeight}}
+const log=t=>{$('log').textContent=t;if(/^Error/.test(t))note('ERR',t.slice(7))};
+window.addEventListener('error',e=>note('ERR','script: '+e.message));window.addEventListener('unhandledrejection',e=>note('ERR','promise: '+(e.reason&&e.reason.message||e.reason)));
+$('copylog').onclick=()=>{const t=LOGS.join('\n');(navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>log('Log copied.'),()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/plain'}));a.download='wildfire-log.txt';a.click()})};
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v)),sleep=ms=>new Promise(r=>setTimeout(r,ms)),raf=()=>new Promise(r=>requestAnimationFrame(r));
 const addD=(d,n)=>new Date(+new Date(d)+n*864e5).toISOString().slice(0,10),isoD=ms=>new Date(ms).toISOString().slice(0,10);
 const daysBetween=(a,b)=>Math.round((+new Date(b)-+new Date(a))/864e5);
@@ -54,11 +58,24 @@ async function getJ(url,label,tries=3){for(let a=0;;a++){let r;
  if(r.status===429&&a<tries-1){await sleep(4000*(a+1));continue}
  if(!r.ok)throw Error(label+': HTTP '+r.status+' '+(await r.text()).slice(0,120));return r.json()}}
 
-/* ================= Earth Engine sign-in ================= */
+/* ================= Earth Engine sign-in (token kept in this browser) ================= */
+const TOKKEY='wf_tok';
+function saveTok(){try{const t=ee.data.getAuthToken();if($('remember').checked&&t)localStorage.setItem(TOKKEY,JSON.stringify({t,exp:Date.now()+3300e3}))}catch(e){}}
+const tokLeft=()=>{try{const s=JSON.parse(localStorage.getItem(TOKKEY)||'null');return s?s.exp-Date.now():-1}catch(e){return-1}};
+function eeInit(){const p=$('project').value.trim();ee.initialize(null,null,()=>{eeReady=true;st('Signed in. Earth Engine ready.');note('OK','Earth Engine ready (project '+p+')')},e=>{st('Earth Engine init failed: '+e);note('ERR','Earth Engine init failed: '+e)},null,p)}
+const silentAuth=()=>new Promise(res=>{const c=$('client').value.trim();if(!c)return res(false);setTimeout(()=>res(false),8000);
+ try{ee.data.authenticateViaOauth(c,()=>{saveTok();res(true)},()=>res(false),null,()=>res(false))}catch(e){res(false)}});
+async function restoreEE(){const c=$('client').value.trim(),p=$('project').value.trim();if(!c||!p||!$('remember').checked)return;
+ try{const s=JSON.parse(localStorage.getItem(TOKKEY)||'null');
+  if(s&&s.exp>Date.now()+60e3){ee.data.setAuthToken(c,'Bearer',s.t.replace(/^Bearer /,''),Math.round((s.exp-Date.now())/1000),[],null,false);eeInit();note('OK','Restored saved Google sign-in ('+Math.round((s.exp-Date.now())/6e4)+' min left)');return}}catch(e){note('WARN','Could not restore saved sign-in: '+e.message)}
+ st('Refreshing Google sign-in…');if(await silentAuth()){eeInit();note('OK','Google sign-in refreshed silently')}else{st('Google session expired. Tap "Sign in with Google" once.');note('WARN','Saved Google sign-in expired and silent refresh was not possible')}}
+async function ensureEE(){if(eeReady&&tokLeft()>60e3)return;if(eeReady&&tokLeft()<0&&!(await silentAuth())){eeReady=false;st('Google session expired. Tap "Sign in with Google" once.')}}
 $('signin').onclick=()=>{saveKeys();const c=$('client').value.trim(),p=$('project').value.trim();
  if(!c||!p)return st('Enter the OAuth client ID and project ID first.');
- const init=()=>ee.initialize(null,null,()=>{eeReady=true;st('Signed in. Earth Engine ready.')},e=>st('Earth Engine init failed: '+e),null,p);
- ee.data.authenticateViaOauth(c,init,e=>st('Sign-in failed: '+e),null,()=>ee.data.authenticateViaPopup(init))};
+ const init=()=>{saveTok();eeInit()};
+ ee.data.authenticateViaOauth(c,init,e=>{st('Sign-in failed: '+e);note('ERR','Sign-in failed: '+e)},null,()=>ee.data.authenticateViaPopup(init))};
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&!running&&(!eeReady||tokLeft()<300e3))restoreEE()});
+restoreEE();
 
 // ===MODEL-START===
 /* ================= raster grid (square cells of 30 m / 10 m, EPSG:4326 with cos(lat) scaling) ================= */
@@ -146,7 +163,7 @@ function baseOf(nw,nd,nm,sm){const fn=nw!==MISSING&&nd!==MISSING?clamp((nw-nd)/5
  return(.25+.75*fn)*Math.exp(-2*(.7*mv+.3*ms))}
 async function loadEE(p){const{nx,ny,N}=G;
  if($('noee').checked){for(let i=0;i<N;i++){G.z[i]=0;G.lc[i]=30;G.base[i]=Math.round(baseOf(8000,2000,2000,2000)*255)}return}
- if(!eeReady)throw Error('Sign in to Earth Engine first, or tick "Skip Earth Engine".');
+ await ensureEE();if(!eeReady)throw Error('Sign in to Earth Engine first (tap Sign in with Google), or tick "Skip Earth Engine".');
  const img=eeImage(p,ee.Geometry.Rectangle([G.w,G.s,G.e,G.n],'EPSG:4326',false)),tiles=[];
  for(let y0=0;y0<ny;y0+=TS)for(let x0=0;x0<nx;x0+=TS){const tw=Math.min(TS,nx-x0),th=Math.min(TS,ny-y0);let any=false;
   for(let y=y0;y<y0+th&&!any;y++)for(let x=x0;x<x0+tw;x++)if(G.inside[y*nx+x]){any=true;break}
@@ -163,7 +180,9 @@ async function loadEE(p){const{nx,ny,N}=G;
  let k=0;await Promise.all(Array.from({length:4},async()=>{while(k<tiles.length&&!err)await work(tiles[k++])}));if(err)throw err;
  for(let y=0;y<ny;y++){let last=0;for(let x=0;x<nx;x++){const i=y*nx+x;if(G.z[i]===MISSING)G.z[i]=last;else last=G.z[i]}}   // fill DEM voids
  const pc=v=>Math.round(100*v/Math.max(1,tot));
- G.gaps=`Data gaps (% of cells): green NDVI ${pc(miss.nw)}, dry NDVI ${pc(miss.nd)}, NDMI ${pc(miss.nm)}, soil ${pc(miss.sm)}${p.bi?', burn index '+pc(miss.bx):''}.`}
+ note('OK',`Earth Engine: ${tiles.length} tiles of ${TS}×${TS} cells (${cnt.hit} from cache), ${tot} cells inside the area.`);
+ G.gaps=`Data gaps (% of cells): green NDVI ${pc(miss.nw)}, dry NDVI ${pc(miss.nd)}, NDMI ${pc(miss.nm)}, soil ${pc(miss.sm)}${p.bi?', burn index '+pc(miss.bx):''}.`;note(/[1-9]/.test(G.gaps.replace(/[^0-9 ,]/g,'').replace(/0/g,''))?'WARN':'OK',G.gaps);
+ let bs=0,bn=0;for(let i=0;i<G.N;i++)if(G.inside[i]){bs+=G.base[i];bn++}note('OK',`Fuel×moisture factor mean ${(bs/Math.max(1,bn)/255).toFixed(2)}, burn reference ${G.hasBI?'loaded':'not loaded'}.`)}
 
 /* ================= Open-Meteo lattice ================= */
 async function loadMet(p){const km=(G.e-G.w)*111.32*Math.cos((G.n+G.s)/2*Math.PI/180),kh=(G.n-G.s)*111.32;let sp=p.spc,nlx,nly;
@@ -184,7 +203,7 @@ async function loadMet(p){const km=(G.e-G.w)*111.32*Math.cos((G.n+G.s)/2*Math.PI
    U[i]=ws*Math.sin(th);V[i]=ws*Math.cos(th);Ts[i]=T+.0065*el;E[i]=RH/100*esat(T)*Math.exp(el/2500);
    let a=0;for(let k=0;k<=72&&i-k>=0;k++)a+=(h.precipitation[i-k]??0)*Math.exp(-k/48);A[i]=a}
   M.U.push(U);M.V.push(V);M.Ts.push(Ts);M.E.push(E);M.A.push(A)}
- G.M=M;W=null}
+ G.M=M;W=null;note('OK',`Open-Meteo: ${np} points (${nlx}×${nly}, ${sp.toFixed(1)} km), ${len} hours ${t[0]} to ${t[len-1]}, start ${hrS}.`)}
 
 /* ================= FIRMS fire detections ================= */
 function parseCSV(txt,src){const rows=txt.trim().split(/\r?\n/),h=rows[0].split(',').map(s=>s.trim()),ix=n=>h.indexOf(n),la=ix('latitude'),lo=ix('longitude'),ad=ix('acq_date'),at=ix('acq_time'),cf=ix('confidence'),ins=ix('instrument');
@@ -200,7 +219,7 @@ async function firmsChunk(key,src,bb,d,nd){const url=`https://firms.modaps.eosdi
   let reach=false;try{await fetch(url,{mode:'no-cors'});reach=true}catch(_){}
   throw Error(reach?'FIRMS answered but the browser blocked the reply (CORS). Use "Load FIRMS CSV" in the Data section, or click the map to place ignitions.':'FIRMS is unreachable from this browser (offline, VPN, ad-blocker or data-saver?).')}}
  const txt=await r.text(),rows=parseCSV(txt,src.replace(/_(NRT|SP)$/,''));if(old)await idb('put',ck,rows);return rows}
-async function getDetections(dA,dB,bb,key){const bases=$('fsrc').value==='ALL'?['VIIRS_SNPP','VIIRS_NOAA20','MODIS']:[$('fsrc').value],jobs=[];
+async function apiDetections(dA,dB,bb,key){const bases=$('fsrc').value==='ALL'?['VIIRS_SNPP','VIIRS_NOAA20','MODIS']:[$('fsrc').value],jobs=[];
  for(let d=dA;d<=dB;d=addD(d,5)){const nd=Math.min(5,daysBetween(d,dB)+1),age=(Date.now()-new Date(d))/864e5;
   for(const b of bases)for(const suf of age>150?['_SP']:age<70?['_NRT']:['_SP','_NRT'])jobs.push({src:b+suf,d,nd})}
  const all=[],seen=new Set();let k=0,done=0,err=null;
@@ -208,19 +227,35 @@ async function getDetections(dA,dB,bb,key){const bases=$('fsrc').value==='ALL'?[
   for(const r of rows){const s=r.la+','+r.lo+','+r.t+r.b;if(!seen.has(s)){seen.add(s);all.push(r)}}}catch(e){err=e}
   log(`FIRMS requests ${++done}/${jobs.length}…`)}}));
  if(err)throw err;return all}
+async function probeNet(){for(const[n,u]of[['FIRMS','https://firms.modaps.eosdis.nasa.gov/api/'],['Open-Meteo','https://api.open-meteo.com/v1/forecast?latitude=0&longitude=0'],['Google','https://www.gstatic.com/generate_204'],['OSM tiles','https://tile.openstreetmap.org/0/0/0.png']]){
+ const t=Date.now();try{await fetch(u,{mode:'no-cors'});note('INFO','probe '+n+': reachable ('+(Date.now()-t)+' ms)')}catch(e){note('ERR','probe '+n+': FAILED ('+e.name+': '+e.message+')')}}}
+async function eeFirms(dA,dB){await ensureEE();if(!eeReady)throw Error('Sign in to Earth Engine to use MODIS fire detections from Earth Engine.');
+ const b=drawn.getBounds(),reg=ee.Geometry.Rectangle([b.getWest(),b.getSouth(),b.getEast(),b.getNorth()],'EPSG:4326',false),
+ fc=ee.ImageCollection('FIRMS').filterDate(dA,addD(dB,1)).filterBounds(reg).map(img=>img.select(['T21','confidence']).addBands(ee.Image.pixelLonLat()).sample({region:reg,scale:1000})
+  .map(f=>f.set('date',img.date().format('YYYY-MM-dd')))).flatten();
+ log('Fire detections from Earth Engine (MODIS, 1 km)…');
+ const r=await new Promise((ok,no)=>fc.getInfo((v,er)=>er?no(Error('Earth Engine FIRMS: '+er)):ok(v)));
+ const rows=r.features.map(f=>f.properties).filter(o=>!($('hiconf').checked&&o.confidence<30)).map(o=>({la:o.latitude,lo:o.longitude,date:o.date,t:Date.parse(o.date+'T06:00:00Z'),b:'MODIS',day:true}));
+ note('OK','MODIS fire detections via Earth Engine: '+rows.length+' ('+dA+' to '+dB+', day-level times).');return rows}
+async function getDetections(dA,dB,bb,key){
+ if($('fsrc').value==='EE'||(!key&&eeReady))return eeFirms(dA,dB);
+ try{note('INFO','FIRMS API '+dA+' to '+dB+' bbox '+bb);const rows=await apiDetections(dA,dB,bb,key);note('OK','FIRMS API: '+rows.length+' detections fetched.');return rows}
+ catch(e){note('ERR','FIRMS API failed: '+e.message);await probeNet();
+  if(eeReady){note('INFO','Falling back to MODIS detections from Earth Engine (1 km, daily).');return eeFirms(dA,dB)}throw e}}
 const bboxStr=()=>{const b=drawn.getBounds();return[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].map(v=>v.toFixed(4)).join(',')};
 $('firmsfile').onchange=e=>{const f=e.target.files[0];if(!f){FILEROWS=null;return}f.text().then(t=>{FILEROWS=parseCSV(t);log(`Loaded ${FILEROWS.length} detections from the CSV file. They are used instead of the FIRMS API.`)}).catch(x=>{FILEROWS=null;log('CSV error: '+x.message)})};
 async function loadFire(p){const ts=startMs(p),hind=p.mode==='hind',tA=hind?ts:Date.now()-p.look*36e5,tB=hind?ts+p.hours*36e5:Date.now();let rows;
- if(FILEROWS)rows=FILEROWS;else{const key=$('firms').value.trim();if(!key){log('No FIRMS key. Click the map to place ignition points.');return null}
+ if(FILEROWS)rows=FILEROWS;else{const key=$('firms').value.trim();if(!key&&$('fsrc').value!=='EE'&&!eeReady){log('No FIRMS key and not signed in to Earth Engine. Click the map to place ignition points.');return null}
   rows=await getDetections(isoD(tA),isoD(tB),bboxStr(),key)}
  const seedEnd=hind?ts+6*36e5:tB,seen=new Set();let nd=0;dots.clearLayers();
- for(const r of rows){if(r.t<tA||r.t>tB)continue;const i=cellAt(r.la,r.lo);if(i<0)continue;nd++;const rad=r.b.startsWith('MODIS')?500:190;
+ for(const r of rows){if(r.day?(r.date<isoD(tA)||r.date>isoD(tB)):(r.t<tA||r.t>tB))continue;const i=cellAt(r.la,r.lo);if(i<0)continue;nd++;const rad=r.b.startsWith('MODIS')?500:190;
   G.dets.push({i,rad,t:r.t});disc(i,rad,j=>G.obs[j]=1);L.circleMarker([r.la,r.lo],{radius:3,weight:1,color:'#fff',fillColor:'#a855f7',fillOpacity:.9}).addTo(dots);
-  if(r.t<=seedEnd&&!seen.has(i)){seen.add(i);G.centers.push(i)}}
+  if((r.day?r.date<=isoD(seedEnd):r.t<=seedEnd)&&!seen.has(i)){seen.add(i);G.centers.push(i)}}
+ note(nd?'OK':'WARN',`Fire detections: ${rows.length} fetched, ${nd} inside the area and time window, ${G.centers.length} ignition points.`);
  return{nd,seeds:G.centers.length}}
 
 /* fire history: real detections over a long period */
-$('hbtn').onclick=async()=>{const b=$('hbtn');try{if(!AOI)return log('Draw or load an area first.');const key=$('firms').value.trim();if(!key&&!FILEROWS)return log('Enter a FIRMS key first.');b.disabled=true;saveKeys();
+$('hbtn').onclick=async()=>{const b=$('hbtn');try{if(!AOI)return log('Draw or load an area first.');const key=$('firms').value.trim();if(!key&&!FILEROWS&&!eeReady)return log('Enter a FIRMS key or sign in to Earth Engine first.');b.disabled=true;saveKeys();
  const dA=$('fh0').value,dB=$('fh1').value,rows=FILEROWS||await getDetections(dA,dB,bboxStr(),key),bd=drawn.getBounds();dots.clearLayers();
  const by={};for(const r of rows){if(r.date<dA||r.date>dB||!bd.contains([r.la,r.lo]))continue;const o=by[r.date]||(by[r.date]={n:0,t:1e15});o.n++;o.t=Math.min(o.t,r.t);
   L.circleMarker([r.la,r.lo],{radius:3,weight:1,color:'#fff',fillColor:'hsl('+(+r.date.slice(5,7)*30)+',90%,55%)',fillOpacity:.9}).addTo(dots)}
@@ -239,7 +274,7 @@ $('prep').onclick=async()=>{const b=$('prep');try{if(!AOI)return log('Draw or lo
  log(`Grid ${G.nx} × ${G.ny} cells of ${p.cell} m (${(G.N/1e6).toFixed(2)} M cells). Loading satellite and terrain…`);
  await loadEE(p);await loadMet(p);const f=await loadFire(p);resetState(p.seedR);drawBG();map.fitBounds([[G.s,G.w],[G.n,G.e]]);
  log(`Ready: ${G.nx} × ${G.ny} cells of ${p.cell} m, weather lattice ${G.M.nlx} × ${G.M.nly} (${G.M.sp.toFixed(1)} km). ${f?`${f.nd} FIRMS detections, ${f.seeds} ignition points.`:''} ${G.gaps||''}${f&&!f.nd?' No FIRMS detections in this window: use "Show fire history" to find real fire dates.':''}`)}
- catch(e){log('Error: '+(e.message||e))}finally{b.disabled=false}};
+ catch(e){log('Error: '+(e.message||e));note('ERR','stack: '+String(e.stack||'').split('\n').slice(0,3).join(' | '))}finally{b.disabled=false}};
 map.on('click',ev=>{if(G&&G.im&&!running){const i=cellAt(ev.latlng.lat,ev.latlng.lng);if(i>=0){G.centers.push(i);igniteDisc(i,+$('seedr').value||60);G.ctx.putImageData(G.im,0,0)}}});
 
 /* ================= background layers ================= */
@@ -301,6 +336,7 @@ $('run').onclick=async()=>{if(running){running=false;return}if(!G||!G.M)return l
   if((k+1)%per===0||k===nS-1||!G.act.length){drawFrame();vframe(tm);record(tm);
    log(`t + ${(tm/60).toFixed(1)} h: ${H.area[H.area.length-1]} km² burnt or burning, ${G.act.length} active cells.`);await(rec?sleep(90):raf());if(!G.act.length)break}}
  drawFrame();if(rec&&rec.state!=='inactive')rec.stop();if(H.t.length)charts();
+ note('OK',`Run finished: ${H.area[H.area.length-1]||0} km² burnt/burning after ${(tm/60).toFixed(1)} h, ${G.act.length} cells still active.`);
  log(`Finished at t + ${(tm/60).toFixed(1)} h${G.act.length?'':' (fire burnt out)'}: ${H.area[H.area.length-1]||0} km² burnt.`);
  if(p.mode==='hind'||G.hasBI||G.dets.length)validate();if($('lyr').value==='cmp')drawBG()}
  catch(e){log('Error: '+(e.message||e))}finally{running=false;b.textContent='2. Run simulation'}};

@@ -30,7 +30,7 @@
 <details open><summary>Data</summary>
 <label>Satellite (sets the cell size)<select id="sensor"><option value="l">Landsat 8/9 (30 m cells)</option><option value="s2">Sentinel-2 (10 m cells)</option></select></label>
 <label>Cell size (m)<input id="cell" type="number" value="30"></label>
-<label>Fire detections<select id="fsrc"><option value="VIIRS_SNPP">VIIRS S-NPP (375 m)</option><option value="VIIRS_NOAA20">VIIRS NOAA-20 (375 m)</option><option value="MODIS">MODIS (1 km)</option><option value="ALL">All three combined</option></select></label>
+<label>Fire detections<select id="fsrc"><option value="VIIRS_SNPP">VIIRS S-NPP (375 m)</option><option value="VIIRS_NOAA20">VIIRS NOAA-20 (375 m)</option><option value="MODIS">MODIS (1 km)</option><option value="ALL">All three combined</option><option value="EE">MODIS via Earth Engine (1 km, daily)</option></select></label>
 <label class="row"><input type="checkbox" id="hiconf" checked>Ignore low-confidence detections</label>
 <label>Load FIRMS CSV (optional, used instead of the API)<input type="file" id="firmsfile" accept=".csv,.txt"></label>
 <div class="two"><label>Fire history from<input id="fh0" type="date"></label><label>to<input id="fh1" type="date"></label></div>
@@ -71,6 +71,10 @@
 <p class="st">Runs automatically after a simulation when a reference exists. FIRMS is always used if detections were loaded. Changing the burn index or windows needs 1. Prepare data again.</p>
 </details>
 
+<details open><summary>Log (errors and loaded data)</summary>
+<pre id="elog" style="max-height:220px;overflow:auto;white-space:pre-wrap;font-size:.68rem"></pre><button id="copylog">Copy log</button>
+</details>
+
 <details open><summary>Results</summary>
 <div id="val"></div><div class="chart"><canvas id="c1"></canvas></div><div class="chart"><canvas id="c2"></canvas></div><div class="chart"><canvas id="c3"></canvas></div>
 </details>
@@ -105,5 +109,5 @@ Slope            f_slope = exp(0.078&middot;slope_deg), limited to +-45 deg</pre
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@google/earthengine/build/ee_api_js.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=3"></script>
 </body></html>
