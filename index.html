@@ -1,108 +1,86 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Wildfire spread simulator</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap">
 <link rel="stylesheet" href="style.css">
 </head><body>
-<div id="map"></div>
+<main id="map" aria-label="Wildfire map"></main>
 <aside id="panel">
-<h1>Wildfire spread simulator</h1>
-<div><button id="lang">हिन्दी</button></div>
-<p class="note">Runs in your browser. Keys stay in this browser and go only to Google, NASA and Open-Meteo.</p>
-<div class="tabs"><button data-m="now" class="on">Nowcast</button><button data-m="fore">Forecast</button><button data-m="hind">Hindcast</button></div>
-
-<details open><summary>Accounts</summary>
-<label>NASA FIRMS map key<input id="firms"></label>
-<label>Google OAuth client ID<input id="client" placeholder="xxxx.apps.googleusercontent.com"></label>
-<label>Earth Engine project ID<input id="project"></label>
-<label class="row"><input type="checkbox" id="remember" checked>Remember in this browser</label>
-<button id="signin">Sign in with Google</button><p id="eestatus" class="st">Not signed in.</p>
-</details>
-<details open><summary>Area of interest</summary>
-<p class="st">Draw a polygon or rectangle with the tools at top left of the map. Edit or delete with the same toolbar.</p>
-<label>Load GeoJSON<input type="file" id="aoifile" accept=".json,.geojson"></label>
-<button id="aoisave">Save area as GeoJSON</button>
-</details>
-<details open><summary>Fire data and environmental data</summary>
-<label>Satellite (sets the cell size)<select id="sensor"><option value="l">Landsat 8/9 (30 m cells)</option><option value="s2">Sentinel-2 (10 m cells)</option></select></label>
-<label>Cell size (m)<input id="cell" type="number" value="30"></label>
-<p class="st">Fire sources (select any)</p><label class="row"><input type="checkbox" id="fs_snpp" checked>VIIRS S-NPP (375 m)</label><label class="row"><input type="checkbox" id="fs_noaa">VIIRS NOAA-20 (375 m)</label><label class="row"><input type="checkbox" id="fs_modis">MODIS (1 km)</label><label class="row"><input type="checkbox" id="fs_ee">MODIS via Earth Engine (1 km, daily)</label>
-<label class="row"><input type="checkbox" id="hiconf" checked>Ignore low-confidence detections</label>
-<label>Load FIRMS CSV (optional, used instead of the API)<input type="file" id="firmsfile" accept=".csv,.txt"></label>
-<div class="two"><label>Fire history from<input id="fh0" type="date"></label><label>to<input id="fh1" type="date"></label></div>
-<p class="st"><b>Order:</b> Show fire history, pick date ranges (or Select all), then 1. Prepare data, then 2. Run simulation. Reset clears everything except your area.</p><label>Merge dates closer than (days) into one range<input id="gap" type="number" min="0" value="3"></label><button id="hbtn">Show fire history on map</button><p id="hist" class="st"></p>
-<div class="two"><label>Green season from<input id="ww0" type="date" value="2025-10-01"></label><label>to<input id="ww1" type="date" value="2025-11-30"></label></div>
-<div class="two"><label>Dry season from<input id="dw0" type="date" value="2026-03-01"></label><label>to<input id="dw1" type="date" value="2026-04-30"></label></div>
-<label>Weather point spacing (km)<input id="wsp" type="number" step="0.5" value="5"></label>
-<label class="row"><input type="checkbox" id="noee">Skip Earth Engine (uniform test terrain)</label>
-<button id="clear">Clear saved data cache</button>
-</details>
-<details open><summary>Map layer</summary>
-<label><select id="lyr"><option value="none">Fire only</option><option value="fuel">Fuel × moisture (spread potential)</option><option value="z">Elevation</option><option value="lc">Land cover</option><option value="obs">FIRMS detections (reference)</option><option value="slope">Slope</option><option value="water">Water mask</option><option value="prob">Burn probability (multi-run)</option><option value="bi">Burn scar (dNBR / RBR)</option><option value="cmp">Model vs reference</option></select></label>
-<label>Layer opacity (%)<input id="lop" type="range" min="30" max="100" value="90"></label>
-<p id="legend" class="st"></p>
-</details>
-<details open><summary>Model</summary>
-<div id="hindbox" hidden><div class="two"><label>Hindcast start date<input id="hs" type="date" value="2026-04-10"></label><label>Hour (UTC)<input id="hh" type="number" min="0" max="23" value="6"></label></div></div>
-<label>Duration (hours)<input id="hours" type="number" value="12"></label>
-<label>Step length (minutes)<input id="dt" type="number" step="0.5" value="2"></label>
-<label>Base spread rate R<sub>0</sub> (m/min)<input id="r0" type="number" step="1" value="10"></label>
-<label>Burn duration (minutes)<input id="tb" type="number" value="20"></label>
-<label>Ignition radius (m)<input id="seedr" type="number" value="60"></label>
-<label>Fire lookback for nowcast/forecast (hours)<input id="look" type="number" value="24"></label>
-<label class="row"><input type="checkbox" id="vid">Record video (.webm)</label>
-<button id="prep">1. Prepare data</button>
-<button id="run" class="go">2. Run simulation</button>
-<button id="reset">Reset</button>
-<p class="st">You can also click the map to add ignition points.</p><p id="log" class="st"></p><div id="checks" class="st"></div>
-<a id="vlink" hidden>Download video</a>
-</details>
-<details open><summary>Log (errors and loaded data)</summary>
-<pre id="elog" style="max-height:220px;overflow:auto;white-space:pre-wrap;font-size:.68rem"></pre><button id="copylog">Copy log</button>
-</details>
-<details><summary>Validation</summary>
-<label class="row"><input type="checkbox" id="usebi">Fetch burn-scar reference from satellite</label>
-<label>Burn index<select id="bxsel"><option value="dnbr">dNBR (pre minus post NBR)</option><option value="rbr">RBR (relative burn ratio)</option></select></label>
-<label>Burnt if index &gt;<input id="bthr" type="number" step="0.05" value="0.1"></label>
-<div class="two"><label>Pre-fire window (days)<input id="pre" type="number" value="45"></label><label>Post-fire window (days)<input id="post" type="number" value="45"></label></div>
-<label>Tolerance (cells)<input id="tol" type="number" min="0" max="3" value="1"></label><button id="validate">Validate last run</button><label>Runs<input id="nrun" type="number" min="2" max="60" value="10"></label><button id="mrun">Run N times: probability, ROC, PR</button>
-<p class="st">Runs automatically after a simulation when a reference exists. FIRMS is always used if detections were loaded. Changing the burn index or windows needs 1. Prepare data again.</p>
-</details>
-<details open><summary>Results</summary>
-<div id="val"></div><div id="mrres" class="st"></div><div class="chart"><canvas id="c4"></canvas></div><div class="chart"><canvas id="c5"></canvas></div><button id="dlplots">Download plots (PNG)</button><button id="dlcsv">Download scores (CSV)</button><div class="chart"><canvas id="c1"></canvas></div><div class="chart"><canvas id="c2"></canvas></div><div class="chart"><canvas id="c3"></canvas></div>
-</details>
-<details><summary>About the simulator</summary><p><b>Developer:</b> Zainab Khan, PhD, former postdoctoral fellow, IIT Roorkee, India.<br>Contact: <a href="mailto:khanzainub@gmail.com">khanzainub@gmail.com</a></p><p><b>How to use</b></p><ol><li>Sign in (Accounts) and draw or load an area.</li><li>Choose the mode: Nowcast, Forecast or Hindcast.</li><li>Choose fire sources and a date range, press Show fire history on map, then select date ranges.</li><li>Choose the satellite and the season windows, press 1. Prepare data and check the ✔/✖ list.</li><li>Adjust simulation parameters if needed, then press 2. Run simulation.</li><li>Validation: tick Fetch burn-scar reference before Prepare, then run Validate or Run N times.</li><li>Download plots and scores from Results. Reset clears everything except keys and sign-in.</li></ol></details>
-<details><summary>Model equations</summary>
-<p>Cellular automaton on a square raster (30 m for Landsat, 10 m for Sentinel-2). Cell states: unburnt, burning, burnt, blocked (outside area, water, built-up, bare, snow). Every step of &Delta;t minutes, each burning cell tries to ignite its 8 neighbours j (distance d, &times;&radic;2 on diagonals):</p>
-<pre>p = 1 - exp(-R &middot; &Delta;t / d)
-R = R0 &middot; F_j &middot; M_j &middot; f_RH &middot; f_T &middot; f_rain &middot; f_wind &middot; f_slope   (m/min)
-
-Effective fuel   Fn = clamp((NDVI_green - NDVI_dry) / 0.5, 0, 1)
-                 F  = 0.25 + 0.75&middot;Fn
-Moisture         m_v = clamp((NDMI + 0.2) / 0.6, 0, 1)
-                 m_s = clamp(theta_soil / 0.4, 0, 1)
-                 M   = 1 - 0.8&middot;(0.7&middot;m_v + 0.3&middot;m_s)
-Humidity         f_RH = max(0.15, 1 - 0.75&middot;(RH/100)^2)
-Temperature      f_T  = clamp(exp(0.03&middot;(T - 25)), 0.6, 1.6)
-Rain             API  = sum P(t-h)&middot;exp(-h/48), h = 0..72 h
-                 f_rain = 0.3 + 0.7&middot;exp(-0.1&middot;API)
-Wind             f_wind = exp(c1&middot;V)&middot;exp(c2&middot;V&middot;(cos(th) - 1))
-                 c1 = 0.045, c2 = 0.131
-Slope            f_slope = exp(0.078&middot;slope_deg), limited to +-45 deg</pre>
-<p>A burning cell keeps burning for at least the burn duration, and then for as long as it still has an unburnt flammable neighbour (at most 12 times the burn duration). This lets the fire front advance at R even when R &middot; burn duration is smaller than one cell; the humidity, temperature and rain terms are floored so humid or wet weather slows the fire without stopping it. F, M and slope are fixed per cell (from satellite and SRTM at native resolution). Weather comes from a lattice of Open-Meteo points and is interpolated to every cell each step: wind as u/v vectors (bilinear), temperature reduced to sea level, interpolated and lowered again with the 30 m DEM (6.5 K/km), humidity from interpolated vapour pressure and the cell temperature, rain index bilinear. Time is interpolated linearly between hourly values. Because p uses R&middot;&Delta;t/d, results do not depend on the step length as long as R&middot;&Delta;t &lt; d. The wind and slope terms follow Alexandridis et al. (2008). R0 and the other constants are starting values and need calibration for your region.</p>
-<p>Validation: predicted burnt cells are compared with FIRMS detections (each dilated to its pixel footprint) and with cells where dNBR (or RBR) exceeds the threshold. Precision, recall, F1 and IoU are reported, and the map layer "Model vs reference" shows agreement.</p>
-</details>
-<details><summary>One-time setup</summary><ol>
-<li>Register a Google Cloud project for Earth Engine.</li>
-<li>Create an OAuth client ID (Web application) and add your page address, for example https://yourname.github.io, under Authorized JavaScript origins.</li>
-<li>Get a FIRMS map key at firms.modaps.eosdis.nasa.gov/api/map_key.</li></ol></details>
+ <header class="head"><div><h1 data-en="Wildfire spread simulator" data-hi="वनाग्नि प्रसार सिमुलेटर">Wildfire spread simulator</h1><p class="st" data-en="Browser-only research tool · draw an area to begin" data-hi="केवल ब्राउज़र में चलने वाला शोध उपकरण · शुरू करने के लिए क्षेत्र बनाएँ">Browser-only research tool · draw an area to begin</p></div><button id="lang" type="button" aria-label="Switch language">हिन्दी / English</button></header>
+ <details id="settings"><summary data-en="One-time settings" data-hi="एक बार की सेटिंग">One-time settings</summary>
+  <label><span data-en="NASA FIRMS map key" data-hi="NASA FIRMS मैप कुंजी">NASA FIRMS map key</span><input id="firms" autocomplete="off"></label>
+  <label><span data-en="Google OAuth web client ID" data-hi="Google OAuth वेब क्लाइंट ID">Google OAuth web client ID</span><input id="client" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off"></label>
+  <label><span data-en="Earth Engine Cloud project ID" data-hi="Earth Engine क्लाउड प्रोजेक्ट ID">Earth Engine Cloud project ID</span><input id="project" autocomplete="off"></label>
+  <label class="row"><input id="remember" type="checkbox" checked><span data-en="Remember settings in this browser" data-hi="सेटिंग इस ब्राउज़र में याद रखें">Remember settings in this browser</span></label>
+  <button id="signin" data-en="Sign in with Google" data-hi="Google से साइन इन करें">Sign in with Google</button><p id="eestatus" class="st" aria-live="polite">Not signed in.</p>
+  <p class="st" data-en="Create an Earth Engine enabled Cloud project and a Web OAuth client with this website's origin. FIRMS and Earth Engine access depend on your accounts and browser permissions." data-hi="Earth Engine सक्षम क्लाउड प्रोजेक्ट और इस वेबसाइट के मूल पते वाला Web OAuth क्लाइंट बनाएँ। FIRMS और Earth Engine पहुँच आपके खातों और ब्राउज़र की अनुमति पर निर्भर है।">Create an Earth Engine enabled Cloud project and a Web OAuth client with this website's origin. FIRMS and Earth Engine access depend on your accounts and browser permissions.</p>
+ </details>
+ <details id="modeSection" open><summary data-en="Mode" data-hi="मोड">Mode</summary><div class="tabs" role="group" aria-label="Mode"><button data-m="now" class="on" data-en="Nowcast" data-hi="वर्तमान आकलन">Nowcast</button><button data-m="fore" data-en="Forecast" data-hi="पूर्वानुमान">Forecast</button><button data-m="hind" data-en="Hindcast" data-hi="पिछला आकलन">Hindcast</button></div><p class="st" data-en="Selecting fire history switches to hindcast automatically. You may still edit dates and duration." data-hi="आग का इतिहास चुनने पर पिछला आकलन अपने आप चुना जाता है। तारीखें और अवधि बाद में बदल सकते हैं।">Selecting fire history switches to hindcast automatically. You may still edit dates and duration.</p></details>
+ <details id="areaSection"><summary data-en="Area of interest" data-hi="अध्ययन क्षेत्र">Area of interest</summary><p class="st" data-en="Draw a polygon or rectangle on the map, or load GeoJSON. Edit/delete using the map toolbar. Reset also clears the area." data-hi="मानचित्र पर बहुभुज या आयत बनाएँ या GeoJSON लोड करें। मानचित्र के औजारों से बदलें/मिटाएँ। रीसेट क्षेत्र भी साफ करता है।">Draw a polygon or rectangle on the map, or load GeoJSON. Edit/delete using the map toolbar. Reset also clears the area.</p><label><span data-en="Load GeoJSON" data-hi="GeoJSON लोड करें">Load GeoJSON</span><input type="file" id="aoifile" accept=".json,.geojson,application/geo+json"></label><button id="aoisave" data-en="Download area GeoJSON" data-hi="क्षेत्र GeoJSON डाउनलोड करें">Download area GeoJSON</button></details>
+ <details id="fireSection"><summary data-en="Fire data" data-hi="आग के आँकड़े">Fire data</summary>
+  <p class="st" data-en="Select any combination of fire sources." data-hi="आग के स्रोतों का कोई भी संयोजन चुनें।">Select any combination of fire sources.</p>
+  <label class="row"><input type="checkbox" id="fs_snpp" checked><span data-en="VIIRS S-NPP (375 m)" data-hi="VIIRS S-NPP (375 मी)">VIIRS S-NPP (375 m)</span></label>
+  <label class="row"><input type="checkbox" id="fs_noaa"><span data-en="VIIRS NOAA-20 (375 m)" data-hi="VIIRS NOAA-20 (375 मी)">VIIRS NOAA-20 (375 m)</span></label>
+  <label class="row"><input type="checkbox" id="fs_modis"><span data-en="MODIS (1 km)" data-hi="MODIS (1 किमी)">MODIS (1 km)</span></label>
+  <label class="row"><input type="checkbox" id="fs_ee"><span data-en="MODIS via Earth Engine (1 km, daily)" data-hi="Earth Engine से MODIS (1 किमी, दैनिक)">MODIS via Earth Engine (1 km, daily)</span></label>
+  <label class="row"><input type="checkbox" id="hiconf" checked><span data-en="Filter low confidence detections" data-hi="कम भरोसे वाली पहचान हटाएँ">Filter low confidence detections</span></label>
+  <label><span data-en="Optional FIRMS CSV (added to selected sources)" data-hi="वैकल्पिक FIRMS CSV (चुने स्रोतों में जोड़ी जाएगी)">Optional FIRMS CSV (added to selected sources)</span><input type="file" id="firmsfile" accept=".csv,text/csv"></label>
+  <div class="two"><label><span data-en="Fire history from" data-hi="आग का इतिहास: आरंभ">Fire history from</span><input id="fh0" type="date"></label><label><span data-en="To" data-hi="अंत">To</span><input id="fh1" type="date"></label></div>
+  <label><span data-en="Merge dates separated by at most (days)" data-hi="अधिकतम इतने दिन के अंतर वाली तारीखें जोड़ें">Merge dates separated by at most (days)</span><input id="gap" type="number" min="0" max="365" value="3"></label>
+  <button id="hbtn" data-en="Show fire history on map" data-hi="मानचित्र पर आग का इतिहास दिखाएँ">Show fire history on map</button><div id="hist" class="st" aria-live="polite"></div>
+ </details>
+ <details id="environmentSection"><summary data-en="Environmental data" data-hi="पर्यावरणीय आँकड़े">Environmental data</summary>
+  <label><span data-en="One satellite (sets cell size)" data-hi="एक उपग्रह (सेल आकार तय करता है)">One satellite (sets cell size)</span><select id="sensor"><option value="l" data-en="Landsat 8/9 · 30 m" data-hi="Landsat 8/9 · 30 मी">Landsat 8/9 · 30 m</option><option value="s2" data-en="Sentinel-2 · 10 m" data-hi="Sentinel-2 · 10 मी">Sentinel-2 · 10 m</option></select></label>
+  <p class="st" data-en="Fuel curing = green season NDVI − dry season NDVI. Set the date windows below; they are suggested from selected fires and remain editable." data-hi="ईंधन सूखना = हरित मौसम NDVI − शुष्क मौसम NDVI। नीचे की तारीखें चयनित आग से सुझाई जाती हैं और बदली जा सकती हैं।">Fuel curing = green season NDVI − dry season NDVI. Set the date windows below; they are suggested from selected fires and remain editable.</p>
+  <div class="two"><label><span data-en="Green NDVI from" data-hi="हरित NDVI: आरंभ">Green NDVI from</span><input id="ww0" type="date"></label><label><span data-en="To" data-hi="अंत">To</span><input id="ww1" type="date"></label></div>
+  <div class="two"><label><span data-en="Dry NDVI from" data-hi="शुष्क NDVI: आरंभ">Dry NDVI from</span><input id="dw0" type="date"></label><label><span data-en="To" data-hi="अंत">To</span><input id="dw1" type="date"></label></div>
+  <div class="two"><label><span data-en="NDMI from" data-hi="NDMI: आरंभ">NDMI from</span><input id="nm0" type="date"></label><label><span data-en="To" data-hi="अंत">To</span><input id="nm1" type="date"></label></div>
+  <div class="two"><label><span data-en="NDWI from" data-hi="NDWI: आरंभ">NDWI from</span><input id="ndw0" type="date"></label><label><span data-en="To" data-hi="अंत">To</span><input id="ndw1" type="date"></label></div>
+  <div class="two"><label><span data-en="Weather from" data-hi="मौसम: आरंभ">Weather from</span><input id="met0" type="date"></label><label><span data-en="To" data-hi="अंत">To</span><input id="met1" type="date"></label></div>
+  <p class="st" data-en="Open-Meteo: 2 m temperature, 10 m wind speed/direction, humidity and precipitation. Hourly data drive the simulation; mean layers summarize the selected weather window. WorldCover and Copernicus GLO-30 supply land cover and slope." data-hi="Open-Meteo: 2 मी तापमान, 10 मी पवन गति/दिशा, आर्द्रता और वर्षा। प्रति घंटे के आँकड़े सिमुलेशन चलाते हैं; माध्य परतें चुनी मौसम अवधि दिखाती हैं। WorldCover और Copernicus GLO-30 से भू-आवरण तथा ढाल मिलते हैं।">Open-Meteo: 2 m temperature, 10 m wind speed/direction, humidity and precipitation. Hourly data drive the simulation; mean layers summarize the selected weather window. WorldCover and Copernicus GLO-30 supply land cover and slope.</p>
+  <label><span data-en="Weather point spacing (km)" data-hi="मौसम बिंदु दूरी (किमी)">Weather point spacing (km)</span><input id="wsp" type="number" min="1" step="0.5" value="5"></label><button id="clear" data-en="Clear downloaded data cache" data-hi="डाउनलोड आँकड़ों का कैश साफ करें">Clear downloaded data cache</button>
+  <label><span data-en="Raster layer on map" data-hi="मानचित्र पर रास्टर परत">Raster layer on map</span><select id="lyr">
+   <option value="none" data-en="Fire only" data-hi="केवल आग">Fire only</option><option value="fuel" data-en="Fuel × moisture" data-hi="ईंधन × नमी">Fuel × moisture</option><option value="curing" data-en="Fuel curing (NDVI difference)" data-hi="ईंधन सूखना (NDVI अंतर)">Fuel curing (NDVI difference)</option><option value="green" data-en="Green NDVI" data-hi="हरित NDVI">Green NDVI</option><option value="dry" data-en="Dry NDVI" data-hi="शुष्क NDVI">Dry NDVI</option><option value="ndmi" data-en="NDMI" data-hi="NDMI">NDMI</option><option value="ndwi" data-en="NDWI" data-hi="NDWI">NDWI</option><option value="lc" data-en="ESA WorldCover" data-hi="ESA WorldCover">ESA WorldCover</option><option value="water" data-en="Water mask" data-hi="जल अवरोध परत">Water mask</option><option value="z" data-en="Elevation (GLO-30)" data-hi="ऊँचाई (GLO-30)">Elevation (GLO-30)</option><option value="slope" data-en="Slope" data-hi="ढाल">Slope</option><option value="temp" data-en="Mean air temperature" data-hi="औसत वायु तापमान">Mean air temperature</option><option value="wind" data-en="Mean wind speed" data-hi="औसत पवन गति">Mean wind speed</option><option value="direction" data-en="Mean wind direction" data-hi="औसत पवन दिशा">Mean wind direction</option><option value="humidity" data-en="Mean humidity" data-hi="औसत आर्द्रता">Mean humidity</option><option value="rain" data-en="Mean precipitation" data-hi="औसत वर्षा">Mean precipitation</option><option value="obs" data-en="Selected fire detections" data-hi="चुनी आग की पहचान">Selected fire detections</option><option value="bi" data-en="Burn index (dNBR / RBR)" data-hi="जले क्षेत्र का सूचकांक (dNBR / RBR)">Burn index (dNBR / RBR)</option><option value="cmp" data-en="Model vs reference" data-hi="मॉडल बनाम संदर्भ">Model vs reference</option><option value="prob" data-en="Burn probability" data-hi="जलने की संभावना">Burn probability</option>
+  </select></label><label><span data-en="Layer opacity" data-hi="परत की अपारदर्शिता">Layer opacity</span><input id="lop" type="range" min="0" max="100" value="100"></label><p id="legend" class="st" aria-live="polite"></p>
+ </details>
+ <details id="parameterSection"><summary data-en="Simulation parameters" data-hi="सिमुलेशन पैरामीटर">Simulation parameters</summary>
+  <div id="hindbox" hidden><div class="two"><label><span data-en="Hindcast start date (UTC)" data-hi="पिछले आकलन की शुरुआत (UTC)">Hindcast start date (UTC)</span><input id="hs" type="date"></label><label><span data-en="Hour (UTC)" data-hi="घंटा (UTC)">Hour (UTC)</span><input id="hh" type="number" min="0" max="23" value="0"></label></div></div>
+  <label><span data-en="Duration (hours)" data-hi="अवधि (घंटे)">Duration (hours)</span><input id="hours" type="number" min="1" max="8760" value="12"></label><label><span data-en="Step length (minutes)" data-hi="समय कदम (मिनट)">Step length (minutes)</span><input id="dt" type="number" min="0.25" max="30" step="0.25" value="2"></label>
+  <label><span data-en="Base spread rate R₀ (m/min)" data-hi="मूल प्रसार दर R₀ (मी/मिनट)">Base spread rate R₀ (m/min)</span><input id="r0" type="number" min="0.01" max="100" step="0.1" value="10"></label><label><span data-en="Burn duration (minutes)" data-hi="जलने की अवधि (मिनट)">Burn duration (minutes)</span><input id="tb" type="number" min="1" max="1000" value="20"></label>
+  <label><span data-en="Moisture term (default 0.8)" data-hi="नमी गुणांक (डिफ़ॉल्ट 0.8)">Moisture term (default 0.8)</span><input id="moist" type="number" min="0.05" max="1" step="0.01" value="0.8"></label><label><span data-en="Rain decay term (default 0.1)" data-hi="वर्षा क्षय गुणांक (डिफ़ॉल्ट 0.1)">Rain decay term (default 0.1)</span><input id="rainK" type="number" min="0.001" max="1" step="0.01" value="0.1"></label>
+  <label><span data-en="Ignition size" data-hi="आग लगने का आकार">Ignition size</span><select id="seedmode"><option value="fixed" data-en="Fixed radius" data-hi="निश्चित त्रिज्या">Fixed radius</option><option value="footprint" data-en="Detection pixel footprint" data-hi="पहचान पिक्सेल का क्षेत्र">Detection pixel footprint</option></select></label><label><span data-en="Fixed ignition radius (m)" data-hi="निश्चित आग त्रिज्या (मी)">Fixed ignition radius (m)</span><input id="seedr" type="number" min="0" value="60"></label><label><span data-en="Nowcast / forecast fire lookback (hours)" data-hi="वर्तमान / पूर्वानुमान में पिछली आग (घंटे)">Nowcast / forecast fire lookback (hours)</span><input id="look" type="number" min="1" value="24"></label>
+  <label class="row"><input id="vid" type="checkbox"><span data-en="Record video (.webm)" data-hi="वीडियो रिकॉर्ड करें (.webm)">Record video (.webm)</span></label><button id="vlink" disabled data-en="Download video (.webm)" data-hi="वीडियो डाउनलोड करें (.webm)">Download video (.webm)</button><p class="st" data-en="Recording requires browser support for canvas capture and WebM. Recording failures appear in the log." data-hi="रिकॉर्डिंग के लिए ब्राउज़र में कैनवास कैप्चर और WebM सुविधा आवश्यक है। विफलता लॉग में दिखाई देगी।">Recording requires browser support for canvas capture and WebM. Recording failures appear in the log.</p>
+ </details>
+ <details id="actionSection"><summary data-en="Prepare / Run / Reset and logs" data-hi="डेटा तैयार करें / चलाएँ / रीसेट और लॉग">Prepare / Run / Reset and logs</summary><button id="prep" data-en="1. Prepare data" data-hi="1. डेटा तैयार करें">1. Prepare data</button><button id="run" class="go" data-en="2. Run simulation" data-hi="2. सिमुलेशन चलाएँ">2. Run simulation</button><button id="reset" data-en="Reset" data-hi="रीसेट">Reset</button><div id="checks" class="st" aria-live="polite"></div><p id="log" class="st" aria-live="polite"></p><pre id="elog" aria-label="Activity log"></pre><button id="copylog" data-en="Copy log" data-hi="लॉग कॉपी करें">Copy log</button></details>
+ <details id="validationSection"><summary data-en="Validation and calibration" data-hi="सत्यापन और कैलिब्रेशन">Validation and calibration</summary>
+  <label><span data-en="Burn reference" data-hi="जले क्षेत्र का संदर्भ">Burn reference</span><select id="bxsel"><option value="dnbr" data-en="dNBR" data-hi="dNBR">dNBR</option><option value="rbr" data-en="RBR" data-hi="RBR">RBR</option></select></label><label><span data-en="Burnt if index exceeds" data-hi="सूचकांक इससे ऊपर हो तो जला माना जाए">Burnt if index exceeds</span><input id="bthr" type="number" step="0.01" value="0.1"></label>
+  <div class="two"><label><span data-en="Pre-fire search (days)" data-hi="आग से पहले खोज (दिन)">Pre-fire search (days)</span><input id="pre" type="number" min="1" value="45"></label><label><span data-en="Post-fire search (days)" data-hi="आग के बाद खोज (दिन)">Post-fire search (days)</span><input id="post" type="number" min="1" value="45"></label></div><label><span data-en="Tolerance (cells)" data-hi="सहनशीलता (सेल)">Tolerance (cells)</span><input id="tol" type="number" min="0" max="2" value="1"></label><label><span data-en="Seed neighbourhood radius (m)" data-hi="आग के बिंदु के आसपास त्रिज्या (मी)">Seed neighbourhood radius (m)</span><input id="near" type="number" min="30" value="1000"></label>
+  <label><span data-en="Stratified points per class" data-hi="प्रति वर्ग स्तरित बिंदु">Stratified points per class</span><input id="sampleN" type="number" min="10" max="5000" value="200"></label><label><span data-en="Minimum point spacing (cells)" data-hi="बिंदुओं के बीच न्यूनतम दूरी (सेल)">Minimum point spacing (cells)</span><input id="spacing" type="number" min="1" value="3"></label><button id="validate" data-en="Validate last run" data-hi="पिछला रन सत्यापित करें">Validate last run</button>
+  <label><span data-en="Probability runs (10–30)" data-hi="संभावना के रन (10–30)">Probability runs (10–30)</span><input id="nrun" type="number" min="10" max="30" value="10"></label><button id="mrun" data-en="Run ensemble · ROC and PR" data-hi="अनेक रन · ROC और PR">Run ensemble · ROC and PR</button>
+  <p class="st" data-en="Calibration: sensitivity first; fit on chosen training events, then test on held-out events. Select at least two ranges with clear satellite reference." data-hi="कैलिब्रेशन: पहले संवेदनशीलता; चुनी प्रशिक्षण घटनाओं पर फिट करें और बाकी घटनाओं पर जाँचें। साफ उपग्रह संदर्भ वाले कम से कम दो रेंज चुनें।">Calibration: sensitivity first; fit on chosen training events, then test on held-out events. Select at least two ranges with clear satellite reference.</p><button id="sensitivity" data-en="1. Sensitivity run" data-hi="1. संवेदनशीलता परीक्षण">1. Sensitivity run</button><div id="trainEvents" class="st"></div><button id="calibrate" data-en="2. Calibrate and test" data-hi="2. कैलिब्रेशन और परीक्षण">2. Calibrate and test</button><div id="calres" class="st"></div>
+ </details>
+ <details id="resultsSection"><summary data-en="Results and downloads" data-hi="परिणाम और डाउनलोड">Results and downloads</summary><div id="val"></div><div id="mrres" class="st"></div><div class="exports" id="exports"></div>
+  <div class="chart"><canvas id="c1"></canvas></div><div class="chart"><canvas id="c2"></canvas></div><div class="chart"><canvas id="c3"></canvas></div><div class="chart"><canvas id="c6"></canvas></div><div class="chart"><canvas id="c4"></canvas></div><div class="chart"><canvas id="c5"></canvas></div><div class="chart"><canvas id="c7"></canvas></div><div class="chart"><canvas id="c8"></canvas></div><div class="chart"><canvas id="c9"></canvas></div>
+ </details>
+ <details id="aboutSection"><summary data-en="About the simulator / README" data-hi="सिमुलेटर के बारे में / उपयोग निर्देश">About the simulator / README</summary>
+  <p data-en="Developer: Zainab Khan, PhD, former postdoctoral fellow, IIT Roorkee, India." data-hi="डेवलपर: ज़ैनब ख़ान, पीएचडी, पूर्व पोस्टडॉक्टरल फ़ेलो, आईआईटी रुड़की, भारत।">Developer: Zainab Khan, PhD, former postdoctoral fellow, IIT Roorkee, India.</p><p><a href="mailto:khanzainub@gmail.com">khanzainub@gmail.com</a></p>
+  <h2 data-en="README · How to use" data-hi="उपयोग निर्देश · कैसे चलाएँ">README · How to use</h2>
+  <ol><li data-en="Open Settings, enter FIRMS key and an Earth Engine enabled project and OAuth web client; sign in to Google." data-hi="सेटिंग खोलें, FIRMS कुंजी, Earth Engine प्रोजेक्ट और OAuth वेब क्लाइंट भरें; Google में साइन इन करें।">Open Settings, enter FIRMS key and an Earth Engine enabled project and OAuth web client; sign in to Google.</li>
+   <li data-en="Draw or load an area. Choose mode and any fire sources. Show fire history, then select one or more numbered ranges." data-hi="क्षेत्र बनाएँ या लोड करें। मोड और आग के स्रोत चुनें। आग का इतिहास दिखाएँ और एक या अधिक नंबर वाली रेंज चुनें।">Draw or load an area. Choose mode and any fire sources. Show fire history, then select one or more numbered ranges.</li>
+   <li data-en="Check suggested environmental dates and satellite; adjust them if needed. Prepare and review the data checklist." data-hi="सुझाई पर्यावरणीय तारीखें और उपग्रह जाँचें; ज़रूरत पर बदलें। डेटा तैयार करके जाँच सूची देखें।">Check suggested environmental dates and satellite; adjust them if needed. Prepare and review the data checklist.</li>
+   <li data-en="Set duration and ignition footprint, optionally record video, then Run. All detections in each selected range ignite at time zero; long selections run range by range." data-hi="अवधि और आग लगाने का आकार चुनें, चाहें तो वीडियो चुनें, फिर चलाएँ। हर चयनित रेंज की सभी पहचान समय शून्य पर जलेंगी; लंबा चयन अलग-अलग रेंज में चलेगा।">Set duration and ignition footprint, optionally record video, then Run. All detections in each selected range ignite at time zero; long selections run range by range.</li>
+   <li data-en="Validation requires pre- and post-fire clear satellite visits. Review whole-area and near-seed scores; run the ensemble for burn probability, ROC and PR. Run sensitivity before calibration; choose training events, then inspect held-out scores." data-hi="सत्यापन को आग से पहले और बाद के साफ उपग्रह अवलोकन चाहिए। पूरे क्षेत्र और आग बिंदुओं के पास के स्कोर देखें; अनेक रन से जलने की संभावना, ROC और PR पाएँ। कैलिब्रेशन से पहले संवेदनशीलता चलाएँ; प्रशिक्षण घटनाएँ चुनें और अलग रखी घटनाओं के स्कोर देखें।">Validation requires pre- and post-fire clear satellite visits. Review whole-area and near-seed scores; run the ensemble for burn probability, ROC and PR. Run sensitivity before calibration; choose training events, then inspect held-out scores.</li>
+   <li data-en="Results include georeferenced GeoTIFF rasters, recorded WebM where supported, PNG plots and CSV scores. A score is unavailable if the reference or required class is absent. Reset clears area, dates, loaded data and results while keeping accounts." data-hi="परिणामों में भू-संदर्भित GeoTIFF रास्टर, सुविधा होने पर रिकॉर्ड हुआ WebM, PNG ग्राफ और CSV स्कोर शामिल हैं। संदर्भ या ज़रूरी वर्ग न मिले तो स्कोर उपलब्ध नहीं होता। रीसेट खातों को छोड़कर क्षेत्र, तारीखें, डेटा और परिणाम साफ करता है।">Results include georeferenced GeoTIFF rasters, recorded WebM where supported, PNG plots and CSV scores. A score is unavailable if the reference or required class is absent. Reset clears area, dates, loaded data and results while keeping accounts.</li></ol>
+  <h2 data-en="Model and limits" data-hi="मॉडल और सीमाएँ">Model and limits</h2><p data-en="A stochastic eight-neighbour cellular automaton uses fuel curing, NDMI, moisture, hourly weather, wind and DEM slope. WorldCover water or NDWI water, built-up, bare and snow are blocked. Each cell is approximately 10 or 30 m; 20 m Sentinel-2 SWIR and 30 m DEM are resampled to 10 m where chosen. Such resampling does not create new source detail. FIRE detections, footprints and dNBR/RBR are different measurements; their comparison is a model validation, not a ground-truth guarantee." data-hi="आठ पड़ोसी वाला संभाव्य सेलुलर ऑटोमेटन ईंधन सूखना, NDMI, नमी, प्रति घंटे का मौसम, हवा और DEM ढाल उपयोग करता है। WorldCover या NDWI का जल, निर्मित क्षेत्र, बंजर और बर्फ अवरुद्ध हैं। सेल लगभग 10 या 30 मी है; Sentinel-2 की 20 मी SWIR और 30 मी DEM को चयन होने पर 10 मी में पुनः नमूना लिया जाता है। इससे मूल डेटा में नया विवरण नहीं जुड़ता। आग पहचान, उनके पिक्सेल और dNBR/RBR अलग माप हैं; तुलना मॉडल जाँच है, वास्तविक जमीनी सत्य की गारंटी नहीं।">A stochastic eight-neighbour cellular automaton uses fuel curing, NDMI, moisture, hourly weather, wind and DEM slope. WorldCover water or NDWI water, built-up, bare and snow are blocked. Each cell is approximately 10 or 30 m; 20 m Sentinel-2 SWIR and 30 m DEM are resampled to 10 m where chosen. Such resampling does not create new source detail. Fire detections, footprints and dNBR/RBR are different measurements; their comparison is a model validation, not a ground-truth guarantee.</p>
+  <pre>p = 1 − exp(−R Δt / d)
+R = R₀ · fuel · moisture · fRH · fT · frain · fwind · fslope
+fuel curing = NDVIgreen − NDVIdry
+fRH = max(0.15, 1 − 0.75(RH/100)²)
+fT = clamp(exp(0.03(T − 25)), 0.6, 1.6)
+frain = 0.3 + 0.7 exp(−0.1 API)</pre><p data-en="Raster coordinates use WGS84 geographic pixels sized in metres at the area centre. Wide areas have increasing scale distortion. Large AOIs and long runs are limited by browser memory, satellite quotas, API availability and browser media support." data-hi="रास्टर निर्देशांक WGS84 के भौगोलिक पिक्सेल हैं, जिनका मीटर आकार क्षेत्र के केंद्र पर तय होता है। चौड़े क्षेत्रों में माप का विरूपण बढ़ता है। बड़े क्षेत्र और लंबे रन ब्राउज़र मेमरी, उपग्रह कोटा, API उपलब्धता और मीडिया सुविधा से सीमित हैं।">Raster coordinates use WGS84 geographic pixels sized in metres at the area centre. Wide areas have increasing scale distortion. Large AOIs and long runs are limited by browser memory, satellite quotas, API availability and browser media support.</p>
+ </details>
 </aside>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@google/earthengine/build/ee_api_js.js"></script>
-<script src="app.js?v=7"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script><script src="https://cdn.jsdelivr.net/npm/@google/earthengine/build/ee_api_js.js"></script><script src="app.js"></script>
 </body></html>
