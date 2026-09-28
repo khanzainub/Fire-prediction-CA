@@ -277,11 +277,12 @@ function applySel(){SKIPN=0;if(!SEL.size)return;const ds=[...SEL].sort();if(MODE
  $('hs').value=ds[0];$('hh').value=new Date(HBY[ds[0]].t).getUTCHours();
  const t0=startMs(P()),need=Math.ceil((Date.parse(ds[ds.length-1]+'T23:59:00Z')-t0)/36e5)+6;$('hours').value=clamp(need,12,240);
  const t1=t0+clamp(need,12,240)*36e5;SKIPN=ds.filter(d=>d>isoD(t1)).length}
-$('hbtn').onclick=async()=>{const b=$('hbtn');try{if(!AOI)return log('Draw or load an area first.');const key=$('firms').value.trim();if(!key&&!FILEROWS&&!eeReady)return log('Enter a FIRMS key or sign in to Earth Engine first.');b.disabled=true;saveKeys();
+function histMessage(t){$('hist').textContent=t;log(t)}
+$('hbtn').onclick=async()=>{const b=$('hbtn');try{if(!AOI)return histMessage('Draw an area on the map or load a GeoJSON area first.');const key=$('firms').value.trim();if(!key&&!FILEROWS&&!eeReady)return histMessage('Enter your NASA FIRMS map key under Accounts, or sign in to Earth Engine first.');b.disabled=true;saveKeys();histMessage('Loading fire detections…');
  const dA=$('fh0').value,dB=$('fh1').value,rows=FILEROWS||await getDetections(dA,dB,bboxStr(),key,true),bd=drawn.getBounds();clearHist();dropGrid();
  const keep=[];for(const r of rows){if(r.date<dA||r.date>dB||!bd.contains([r.la,r.lo]))continue;keep.push(r);const o=HBY[r.date]||(HBY[r.date]={n:0,t:1e15});o.n++;o.t=Math.min(o.t,r.t);
   L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,weight:1,color:'#fff',fillColor:'hsl('+(+r.date.slice(5,7)*30)+',90%,55%)',fillOpacity:.9}).addTo(hdots)}
- HROWS=keep;if(FILEROWS)LASTSRC='CSV file';renderHist();log(`Fire history: ${keep.length} detections on ${Object.keys(HBY).length} dates.`)}catch(e){log('Error: '+(e.message||e))}finally{b.disabled=false}};
+ HROWS=keep;if(FILEROWS)LASTSRC='CSV file';renderHist();log(`Fire history: ${keep.length} detections on ${Object.keys(HBY).length} dates.`)}catch(e){histMessage('Error: '+(e.message||e))}finally{b.disabled=false}};
 $('hist').onclick=e=>{const a=e.target.closest('a');if(!a)return;e.preventDefault();
  if(a.dataset.all)Object.keys(HBY).forEach(d=>SEL.add(d));else if(a.dataset.none)SEL.clear();else if(a.dataset.d){const d=a.dataset.d;SEL.has(d)?SEL.delete(d):SEL.add(d)}else return;
  applySel();renderHist()};
