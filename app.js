@@ -5,7 +5,7 @@ let MODE='now',G=null,AOI=null,eeReady=false,running=false,overlay=null,H=null,C
 
 // ---------- map and area ----------
 const map=L.map('map').setView([29.5,75],8);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'© OpenStreetMap © CARTO',maxZoom:18}).addTo(map);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors',maxZoom:19}).addTo(map);
 const drawn=L.featureGroup().addTo(map);
 map.addControl(new L.Control.Draw({edit:{featureGroup:drawn},draw:{polygon:true,rectangle:true,polyline:false,circle:false,marker:false,circlemarker:false}}));
 function setAOI(){const polys=[];drawn.eachLayer(l=>{const g=l.toGeoJSON().geometry;g.type==='Polygon'?polys.push(g.coordinates):g.coordinates.forEach(c=>polys.push(c))});
