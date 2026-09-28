@@ -14,8 +14,11 @@ let MODE='now',G=null,AOI=null,eeReady=false,running=false,FILEROWS=null,CH=[],r
 /* ================= map, area of interest ================= */
 const map=L.map('map').setView([29.5,75],8);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors',maxZoom:19}).addTo(map);
+// stacking order (bottom to top): base map < raster layers (450) < fire canvas (same pane, added later) < AOI outline (460) < detection dots (470)
+map.createPane('raster').style.zIndex=450;map.createPane('aoi').style.zIndex=460;map.createPane('dots').style.zIndex=470;
+const AOI_STYLE={color:'#3b82f6',weight:2.5,opacity:1,fill:false,fillOpacity:0,pane:'aoi'};   // outline only, no fill, so nothing sits over the rasters
 const drawn=L.featureGroup().addTo(map),dots=L.layerGroup().addTo(map);
-map.addControl(new L.Control.Draw({edit:{featureGroup:drawn},draw:{polygon:true,rectangle:true,polyline:false,circle:false,marker:false,circlemarker:false}}));
+map.addControl(new L.Control.Draw({edit:{featureGroup:drawn},draw:{polygon:{shapeOptions:AOI_STYLE},rectangle:{shapeOptions:AOI_STYLE},polyline:false,circle:false,marker:false,circlemarker:false}}));
 
 // canvas drawn straight on the map (no PNG encoding per frame), hard pixel edges
 const CanvasOverlay=L.ImageOverlay.extend({_initImage(){const c=this._image=this._url;c.classList.add('leaflet-image-layer');
@@ -24,9 +27,9 @@ const CanvasOverlay=L.ImageOverlay.extend({_initImage(){const c=this._image=this
 function dropGrid(){if(G){G.fo&&G.fo.remove();G.bgo&&G.bgo.remove()}G=null;dots.clearLayers()}
 function setAOI(){const polys=[];drawn.eachLayer(l=>{const g=l.toGeoJSON().geometry;g.type==='Polygon'?polys.push(g.coordinates):g.coordinates.forEach(c=>polys.push(c))});
  AOI=polys.length?polys:null;dropGrid();if(AOI)localStorage.setItem('wf_aoi',JSON.stringify(AOI));log(AOI?'Area set.':'No area.')}
-function addGJ(gj){drawn.clearLayers();(gj.features||[gj]).forEach(f=>{const g=f.geometry||f;if(/Polygon/.test(g.type))L.geoJSON(g).eachLayer(l=>drawn.addLayer(l))});
+function addGJ(gj){drawn.clearLayers();(gj.features||[gj]).forEach(f=>{const g=f.geometry||f;if(/Polygon/.test(g.type))L.geoJSON(g,{pane:'aoi',style:()=>AOI_STYLE}).eachLayer(l=>drawn.addLayer(l))});
  if(drawn.getLayers().length){map.fitBounds(drawn.getBounds());setAOI()}else log('No polygon found in that file.')}
-map.on(L.Draw.Event.CREATED,e=>{drawn.clearLayers();drawn.addLayer(e.layer);setAOI()});
+map.on(L.Draw.Event.CREATED,e=>{drawn.clearLayers();e.layer.setStyle&&e.layer.setStyle(AOI_STYLE);drawn.addLayer(e.layer);setAOI()});
 map.on('draw:edited draw:deleted',setAOI);
 $('aoifile').onchange=e=>{const f=e.target.files[0];if(f)f.text().then(t=>addGJ(JSON.parse(t))).catch(()=>log('Could not read that file.'))};
 $('aoisave').onclick=()=>{if(!AOI)return log('Draw an area first.');const a=document.createElement('a');
@@ -126,14 +129,20 @@ function wxAt(x,y,zc){const M=G.M,gx=clamp((x+.5)/G.nx*(M.nlx-1),0,M.nlx-1),gy=c
 /* ================= the automaton ================= */
 const DX=[-1,0,1,-1,1,-1,0,1],DY=[-1,-1,-1,0,0,1,1,1],SQ=Math.SQRT2,
  COSA=DX.map((x,k)=>-DY[k]/Math.hypot(x,DY[k])),SINA=DX.map((x,k)=>x/Math.hypot(x,DY[k]));
+// weather factor: each term is softened and has a floor, so humid or wet weather slows the fire but never stops it outright
+// (the old product of five terms fell to ~0 in humid/wet weather, so nothing ever spread)
+const fRH=rh=>Math.max(.15,1-.75*(rh/100)**2),fT=t=>clamp(Math.exp(.03*(t-25)),.6,1.6),fRain=a=>.3+.7*Math.exp(-.1*a),fWx=()=>fRH(wRH)*fT(wT)*fRain(wA);
 function step(p,tmin){const{nx,ny,state,age,z,base,cell}=G;setWeather(tmin);const keep=[],born=[];
  for(const i of G.act){const x=i%nx,y=(i-x)/nx,zi=z[i];wxAt(x,y,zi);
-  const fm=(1-.9*(wRH/100)**2)*Math.exp(.03*(wT-25))*Math.exp(-.3*wA),V=wV,e1=Math.exp(.045*V);
+  const fm=fWx(),V=wV,e1=Math.exp(.045*V);
+  let left=0;   // neighbours that could still catch fire
   for(let k=0;k<8;k++){const X=x+DX[k],Y=y+DY[k];if(X<0||Y<0||X>=nx||Y>=ny)continue;const j=Y*nx+X;if(state[j]!==0)continue;
    const d=DX[k]&&DY[k]?cell*SQ:cell,pw=V>.05?e1*Math.exp(.131*V*(COSA[k]*wCos+SINA[k]*wSin-1)):1,
     ps=Math.exp(.078*clamp(Math.atan((z[j]-zi)/d)*57.29578,-45,45)),R=p.R0*(base[j]/255)*fm*pw*ps;
-   if(Math.random()<1-Math.exp(-R*p.dt/d)){state[j]=1;age[j]=0;born.push(j);paintFlame(j,0)}}
-  if(++age[i]>=G.tbs){state[i]=2;G.nBurnt++;paintBurnt(i)}else keep.push(i)}
+   if(Math.random()<1-Math.exp(-R*p.dt/d)){state[j]=1;age[j]=0;born.push(j);paintFlame(j,0)}else left++}
+  // a cell burns at least tbs steps. After that it keeps burning while it still has an unburnt flammable neighbour (front keeps moving at R
+  // even when R*burn time < one cell), up to tbMax. Without this, slow fires die at the percolation threshold and never spread.
+  if(++age[i]>=G.tbs&&(left===0||age[i]>=(G.tbMax||G.tbs*12))){state[i]=2;G.nBurnt++;paintBurnt(i)}else keep.push(i)}
  G.act=keep.concat(born)}
 // ===MODEL-END===
 
@@ -160,7 +169,7 @@ async function eeTile(img,x0,y0,tw,th){
  const r=await new Promise((ok,no)=>img.sampleRectangle({region:reg,defaultValue:MISSING}).getInfo((v,er)=>er?no(Error(er)):ok(v))),o=r.properties,out={};
  for(const k in o){out[k]=Int16Array.from(o[k].flat());if(out[k].length!==tw*th)throw Error(`Earth Engine tile size mismatch (${out[k].length} vs ${tw*th})`)}return out}
 function baseOf(nw,nd,nm,sm){const fn=nw!==MISSING&&nd!==MISSING?clamp((nw-nd)/5000,0,1):.3,mv=nm!==MISSING?clamp((nm/1e4+.2)/.6,0,1):.5,ms=sm!==MISSING?clamp(sm/1e4/.4,0,1):.5;
- return(.25+.75*fn)*Math.exp(-2*(.7*mv+.3*ms))}
+ return(.25+.75*fn)*(1-.8*(.7*mv+.3*ms))}
 async function loadEE(p){const{nx,ny,N}=G;
  if($('noee').checked){for(let i=0;i<N;i++){G.z[i]=0;G.lc[i]=30;G.base[i]=Math.round(baseOf(8000,2000,2000,2000)*255)}return}
  await ensureEE();if(!eeReady)throw Error('Sign in to Earth Engine first (tap Sign in with Google), or tick "Skip Earth Engine".');
@@ -249,7 +258,7 @@ async function loadFire(p){const ts=startMs(p),hind=p.mode==='hind',tA=hind?ts:D
   rows=await getDetections(isoD(tA),isoD(tB),bboxStr(),key)}
  const seedEnd=hind?ts+6*36e5:tB,seen=new Set();let nd=0;dots.clearLayers();
  for(const r of rows){if(r.day?(r.date<isoD(tA)||r.date>isoD(tB)):(r.t<tA||r.t>tB))continue;const i=cellAt(r.la,r.lo);if(i<0)continue;nd++;const rad=r.b.startsWith('MODIS')?500:190;
-  G.dets.push({i,rad,t:r.t});disc(i,rad,j=>G.obs[j]=1);L.circleMarker([r.la,r.lo],{radius:3,weight:1,color:'#fff',fillColor:'#a855f7',fillOpacity:.9}).addTo(dots);
+  G.dets.push({i,rad,t:r.t});disc(i,rad,j=>G.obs[j]=1);L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,weight:1,color:'#fff',fillColor:'#a855f7',fillOpacity:.9}).addTo(dots);
   if((r.day?r.date<=isoD(seedEnd):r.t<=seedEnd)&&!seen.has(i)){seen.add(i);G.centers.push(i)}}
  note(nd?'OK':'WARN',`Fire detections: ${rows.length} fetched, ${nd} inside the area and time window, ${G.centers.length} ignition points.`);
  return{nd,seeds:G.centers.length}}
@@ -258,7 +267,7 @@ async function loadFire(p){const ts=startMs(p),hind=p.mode==='hind',tA=hind?ts:D
 $('hbtn').onclick=async()=>{const b=$('hbtn');try{if(!AOI)return log('Draw or load an area first.');const key=$('firms').value.trim();if(!key&&!FILEROWS&&!eeReady)return log('Enter a FIRMS key or sign in to Earth Engine first.');b.disabled=true;saveKeys();
  const dA=$('fh0').value,dB=$('fh1').value,rows=FILEROWS||await getDetections(dA,dB,bboxStr(),key),bd=drawn.getBounds();dots.clearLayers();
  const by={};for(const r of rows){if(r.date<dA||r.date>dB||!bd.contains([r.la,r.lo]))continue;const o=by[r.date]||(by[r.date]={n:0,t:1e15});o.n++;o.t=Math.min(o.t,r.t);
-  L.circleMarker([r.la,r.lo],{radius:3,weight:1,color:'#fff',fillColor:'hsl('+(+r.date.slice(5,7)*30)+',90%,55%)',fillOpacity:.9}).addTo(dots)}
+  L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,weight:1,color:'#fff',fillColor:'hsl('+(+r.date.slice(5,7)*30)+',90%,55%)',fillOpacity:.9}).addTo(dots)}
  const days=Object.keys(by),tot=days.reduce((s,d)=>s+by[d].n,0),top=days.sort((a,c)=>by[c].n-by[a].n).slice(0,6);
  $('hist').innerHTML=tot?`<b>${tot}</b> detections on <b>${days.length}</b> days between ${dA} and ${dB}. Busiest days (tap one to set up a hindcast):<br>`+top.map(d=>`<a href="#" data-d="${d}" data-h="${new Date(by[d].t).getUTCHours()}">${d} (${by[d].n})</a>`).join(' · ')
   :'No detections in this area and period. If this looks wrong, check the date range and the FIRMS key.';
@@ -268,7 +277,8 @@ $('hist').onclick=e=>{const a=e.target.closest('a[data-d]');if(!a)return;e.preve
 /* ================= prepare ================= */
 function mkOverlays(){const{nx,ny,w,e,s,n}=G,mk=()=>{const c=document.createElement('canvas');c.width=nx;c.height=ny;return c},bb=[[s,w],[n,e]];
  G.bgc=mk();G.cv=mk();G.ctx=G.cv.getContext('2d');G.im=G.ctx.createImageData(nx,ny);
- G.bgo=new CanvasOverlay(G.bgc,bb,{opacity:.75,interactive:false}).addTo(map);G.fo=new CanvasOverlay(G.cv,bb,{interactive:false}).addTo(map)}
+ G.bgo=new CanvasOverlay(G.bgc,bb,{opacity:lop(),interactive:false,pane:'raster'}).addTo(map);G.fo=new CanvasOverlay(G.cv,bb,{interactive:false,pane:'raster'}).addTo(map)}
+const lop=()=>clamp((+$('lop').value||90)/100,.2,1);
 $('prep').onclick=async()=>{const b=$('prep');try{if(!AOI)return log('Draw or load an area first.');b.disabled=true;saveKeys();const p=P();dropGrid();const bb=drawn.getBounds();
  build({w:bb.getWest(),e:bb.getEast(),s:bb.getSouth(),n:bb.getNorth()},p,AOI);mkOverlays();
  log(`Grid ${G.nx} × ${G.ny} cells of ${p.cell} m (${(G.N/1e6).toFixed(2)} M cells). Loading satellite and terrain…`);
@@ -280,15 +290,26 @@ map.on('click',ev=>{if(G&&G.im&&!running){const i=cellAt(ev.latlng.lat,ev.latlng
 /* ================= background layers ================= */
 const RAMP=[[40,60,130],[50,160,140],[250,225,60],[225,50,30]],ramp=t=>{t=clamp(t,0,1)*3;const k=Math.min(2,t|0),f=t-k,a=RAMP[k],b=RAMP[k+1];return[a[0]+(b[0]-a[0])*f,a[1]+(b[1]-a[1])*f,a[2]+(b[2]-a[2])*f]};
 const LCC={10:[0,100,0],20:[255,187,34],30:[255,255,76],40:[240,150,255],50:[250,0,0],60:[180,180,180],70:[240,240,240],80:[0,100,200],90:[0,150,160],95:[0,207,117],100:[250,230,160]};
-function drawBG(){if(!G||!G.bgc)return;const v=$('lyr').value,{nx,ny,N,inside,base,z,lc,bx,obs,state}=G,c=G.bgc.getContext('2d'),im=c.createImageData(nx,ny),d=im.data,thr=(+$('bthr').value||.1)*1e4;
- let zmin=1e9,zmax=-1e9;if(v==='z')for(let i=0;i<N;i++)if(inside[i]){if(z[i]<zmin)zmin=z[i];if(z[i]>zmax)zmax=z[i]}
- for(let i=0;i<N;i++){if(!inside[i])continue;let col=null,a=255;
-  if(v==='fuel')col=ramp(base[i]/255*1.6);else if(v==='z')col=ramp((z[i]-zmin)/Math.max(1,zmax-zmin));else if(v==='lc')col=LCC[lc[i]]||[128,128,128];
-  else if(v==='bi'){if(bx[i]!==MISSING&&bx[i]>thr)col=[255,40,40]}else if(v==='obs'){if(obs[i])col=[190,80,250]}
+function slopeOf(){if(G.slope)return G.slope;const{nx,ny,z,cell}=G,sl=new Uint8Array(G.N);      // Horn-style central differences, degrees
+ for(let y=0;y<ny;y++)for(let x=0;x<nx;x++){const xa=Math.max(0,x-1),xb=Math.min(nx-1,x+1),ya=Math.max(0,y-1),yb=Math.min(ny-1,y+1),
+  gx=(z[y*nx+xb]-z[y*nx+xa])/((xb-xa||1)*cell),gy=(z[yb*nx+x]-z[ya*nx+x])/((yb-ya||1)*cell);sl[y*nx+x]=Math.min(90,Math.round(Math.atan(Math.hypot(gx,gy))*57.29578))}
+ return G.slope=sl}
+function drawBG(){if(!G||!G.bgc)return;const v=$('lyr').value,{nx,ny,N,inside,base,z,lc,bx,obs,state}=G,c=G.bgc.getContext('2d'),im=c.createImageData(nx,ny),d=im.data,thr=(+$('bthr').value||.1)*1e4,lg=$('legend');
+ let zmin=1e9,zmax=-1e9,sl=null,msg='';
+ if(v==='z'){for(let i=0;i<N;i++)if(inside[i]){if(z[i]<zmin)zmin=z[i];if(z[i]>zmax)zmax=z[i]}msg=`Elevation ${zmin} to ${zmax} m (blue low, red high).`}
+ if(v==='slope'){sl=slopeOf();msg='Slope 0 to 45° and steeper (blue flat, red steep).'}
+ if(v==='bi'){msg=G.hasBI?`${$('bxsel').value==='rbr'?'RBR':'dNBR'} from -0.25 (blue) to 1.0 or more (red). Cells above ${thr/1e4} count as burnt. Grey = no satellite data.`:'No burn reference loaded. Tick "Fetch burn-scar reference from satellite" (Validation) and press 1. Prepare data again.'}
+ if(v==='obs'&&!G.dets.length)msg='No FIRMS detections loaded for this run.';
+ if(v==='fuel')msg='Fuel × moisture: blue = poor spread potential, red = high.';
+ if(lg)lg.textContent=msg;if(msg&&/^No /.test(msg))note('WARN','Layer: '+msg);
+ for(let i=0;i<N;i++){if(!inside[i])continue;let col=null;
+  if(v==='fuel')col=ramp(base[i]/255*1.6);else if(v==='z')col=ramp((z[i]-zmin)/Math.max(1,zmax-zmin));else if(v==='slope')col=ramp(sl[i]/45);else if(v==='lc')col=LCC[lc[i]]||[128,128,128];
+  else if(v==='bi'){if(bx[i]===MISSING)col=[90,90,90];else col=ramp((bx[i]/1e4+.25)/1.25)}   // continuous index, not just the burnt cells
+  else if(v==='obs'){if(obs[i])col=[190,80,250]}
   else if(v==='cmp'){const pr=state[i]===1||state[i]===2,ob=G.hasBI?(bx[i]!==MISSING&&bx[i]>thr):obs[i]===1;if(pr&&ob)col=[60,200,90];else if(pr)col=[240,60,60];else if(ob)col=[70,130,255]}
-  if(col){d[i*4]=col[0];d[i*4+1]=col[1];d[i*4+2]=col[2];d[i*4+3]=a}}
+  if(col){d[i*4]=col[0];d[i*4+1]=col[1];d[i*4+2]=col[2];d[i*4+3]=255}}
  c.putImageData(im,0,0)}
-$('lyr').onchange=drawBG;
+$('lyr').onchange=drawBG;$('lop').oninput=()=>{if(G&&G.bgo)G.bgo.setOpacity(lop())};
 
 /* ================= video, validation, charts ================= */
 function vstart(){$('vlink').hidden=true;rec=null;if(!$('vid').checked||!window.MediaRecorder)return;const w=G.nx<720?G.nx*Math.floor(720/G.nx):960;
@@ -296,7 +317,7 @@ function vstart(){$('vlink').hidden=true;rec=null;if(!$('vid').checked||!window.
  rec=new MediaRecorder(vc.captureStream(10));rec.ondataavailable=e=>chunks.push(e.data);
  rec.onstop=()=>{const a=$('vlink');a.href=URL.createObjectURL(new Blob(chunks,{type:'video/webm'}));a.download='fire-spread.webm';a.hidden=false};rec.start()}
 function vframe(tm){if(!rec)return;const x=vc.getContext('2d');x.fillStyle='#000';x.fillRect(0,0,vc.width,vc.height);x.imageSmoothingEnabled=vc.width<G.nx;
- if($('lyr').value!=='none'){x.globalAlpha=.75;x.drawImage(G.bgc,0,30,vc.width,vc.height-30);x.globalAlpha=1}
+ if($('lyr').value!=='none'){x.globalAlpha=lop();x.drawImage(G.bgc,0,30,vc.width,vc.height-30);x.globalAlpha=1}
  x.drawImage(G.cv,0,30,vc.width,vc.height-30);x.fillStyle='#ffc21a';x.font='16px sans-serif';x.fillText(`t + ${(tm/60).toFixed(1)} h`,8,20)}
 function validate(){if(!G||!G.M)return log('Prepare data and run a simulation first.');
  const{state,obs,bx,inside,lc,N,cell}=G,thr=(+$('bthr').value||.1)*1e4,km=c=>(c*cell*cell/1e6).toFixed(2);
@@ -325,12 +346,15 @@ function charts(){CH.forEach(c=>c&&c.destroy());Chart.defaults.color='#c9b8b0';C
 
 /* ================= run ================= */
 $('reset').onclick=()=>{running=false;if(G){resetState(+$('seedr').value||60);log('Reset.')}};
+function diag(p){try{const i=G.act[0],x=i%G.nx,y=(i/G.nx)|0;setWeather(0);wxAt(x,y,G.z[i]);let bs=0,n=0;for(let j=0;j<G.N;j+=7)if(G.inside[j]&&!NF[G.lc[j]]){bs+=G.base[j];n++}
+ const b=bs/Math.max(1,n)/255,R=p.R0*b*fWx();
+ note(R<.05?'WARN':'OK',`Spread check at t=0: wind ${wV.toFixed(1)} m/s, T ${wT.toFixed(1)} C, RH ${Math.round(wRH)}%, rain index ${wA.toFixed(1)} mm. Factors: RH ${fRH(wRH).toFixed(2)}, T ${fT(wT).toFixed(2)}, rain ${fRain(wA).toFixed(2)}, mean fuel×moisture ${b.toFixed(2)}. Mean R about ${R.toFixed(2)} m/min (before wind and slope), so about ${(R*p.hours*60).toFixed(0)} m of front travel in ${p.hours} h.${R<.05?' Very slow: raise R0 or check fuel/moisture layers.':''}`)}catch(e){note('WARN','diag failed: '+e.message)}}
 function record(tm){let cx=G.nx/2,cy=G.ny/2;if(G.act.length){let sx=0,sy=0;for(const i of G.act){sx+=i%G.nx;sy+=(i/G.nx)|0}cx=sx/G.act.length;cy=sy/G.act.length;G.lastC=[cx,cy]}else if(G.lastC)[cx,cy]=G.lastC;
  const ci=clamp(Math.round(cy),0,G.ny-1)*G.nx+clamp(Math.round(cx),0,G.nx-1);wxAt(cx,cy,G.z[ci]);const a=G.cell*G.cell/1e6;
  H.t.push(+(tm/60).toFixed(3));H.area.push(+((G.nBurnt+G.act.length)*a).toFixed(3));H.act.push(+(G.act.length*a).toFixed(3));H.ws.push(+wV.toFixed(1));H.wd.push(Math.round(wDir));H.T.push(+wT.toFixed(1));H.RH.push(Math.round(wRH))}
 $('run').onclick=async()=>{if(running){running=false;return}if(!G||!G.M)return log('Prepare data first.');const p=P(),b=$('run');resetState(p.seedR);
  if(!G.act.length)return log('Nothing to ignite. Add a FIRMS key, or click the map (a fire cell must be flammable).');
- G.tbs=Math.max(1,Math.round(p.tb/p.dt));const nS=Math.round(p.hours*60/p.dt),per=Math.max(1,Math.round(10/p.dt));
+ G.tbs=Math.max(1,Math.round(p.tb/p.dt));G.tbMax=G.tbs*12;diag(p);const nS=Math.round(p.hours*60/p.dt),per=Math.max(1,Math.round(10/p.dt));
  running=true;b.textContent='Stop';H={t:[],area:[],act:[],ws:[],wd:[],T:[],RH:[]};vstart();$('val').innerHTML='';let tm=0;
  try{for(let k=0;k<nS&&running;k++){step(p,k*p.dt);tm=(k+1)*p.dt;
   if((k+1)%per===0||k===nS-1||!G.act.length){drawFrame();vframe(tm);record(tm);

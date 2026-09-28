@@ -59,7 +59,9 @@
 </details>
 
 <details open><summary>Map layer</summary>
-<label><select id="lyr"><option value="none">Fire only</option><option value="fuel">Fuel × moisture (spread potential)</option><option value="z">Elevation</option><option value="lc">Land cover</option><option value="obs">FIRMS detections (reference)</option><option value="bi">Burn scar (dNBR / RBR)</option><option value="cmp">Model vs reference</option></select></label>
+<label><select id="lyr"><option value="none">Fire only</option><option value="fuel">Fuel × moisture (spread potential)</option><option value="z">Elevation</option><option value="lc">Land cover</option><option value="obs">FIRMS detections (reference)</option><option value="slope">Slope</option><option value="bi">Burn scar (dNBR / RBR)</option><option value="cmp">Model vs reference</option></select></label>
+<label>Layer opacity (%)<input id="lop" type="range" min="30" max="100" value="90"></label>
+<p id="legend" class="st"></p>
 </details>
 
 <details><summary>Validation</summary>
@@ -88,15 +90,15 @@ Effective fuel   Fn = clamp((NDVI_green - NDVI_dry) / 0.5, 0, 1)
                  F  = 0.25 + 0.75&middot;Fn
 Moisture         m_v = clamp((NDMI + 0.2) / 0.6, 0, 1)
                  m_s = clamp(theta_soil / 0.4, 0, 1)
-                 M   = exp(-2&middot;(0.7&middot;m_v + 0.3&middot;m_s))
-Humidity         f_RH = 1 - 0.9&middot;(RH/100)^2
-Temperature      f_T  = exp(0.03&middot;(T - 25))
+                 M   = 1 - 0.8&middot;(0.7&middot;m_v + 0.3&middot;m_s)
+Humidity         f_RH = max(0.15, 1 - 0.75&middot;(RH/100)^2)
+Temperature      f_T  = clamp(exp(0.03&middot;(T - 25)), 0.6, 1.6)
 Rain             API  = sum P(t-h)&middot;exp(-h/48), h = 0..72 h
-                 f_rain = exp(-0.3&middot;API)
+                 f_rain = 0.3 + 0.7&middot;exp(-0.1&middot;API)
 Wind             f_wind = exp(c1&middot;V)&middot;exp(c2&middot;V&middot;(cos(th) - 1))
                  c1 = 0.045, c2 = 0.131
 Slope            f_slope = exp(0.078&middot;slope_deg), limited to +-45 deg</pre>
-<p>F, M and slope are fixed per cell (from satellite and SRTM at native resolution). Weather comes from a lattice of Open-Meteo points and is interpolated to every cell each step: wind as u/v vectors (bilinear), temperature reduced to sea level, interpolated and lowered again with the 30 m DEM (6.5 K/km), humidity from interpolated vapour pressure and the cell temperature, rain index bilinear. Time is interpolated linearly between hourly values. Because p uses R&middot;&Delta;t/d, results do not depend on the step length as long as R&middot;&Delta;t &lt; d. The wind and slope terms follow Alexandridis et al. (2008). R0 and the other constants are starting values and need calibration for your region.</p>
+<p>A burning cell keeps burning for at least the burn duration, and then for as long as it still has an unburnt flammable neighbour (at most 12 times the burn duration). This lets the fire front advance at R even when R &middot; burn duration is smaller than one cell; the humidity, temperature and rain terms are floored so humid or wet weather slows the fire without stopping it. F, M and slope are fixed per cell (from satellite and SRTM at native resolution). Weather comes from a lattice of Open-Meteo points and is interpolated to every cell each step: wind as u/v vectors (bilinear), temperature reduced to sea level, interpolated and lowered again with the 30 m DEM (6.5 K/km), humidity from interpolated vapour pressure and the cell temperature, rain index bilinear. Time is interpolated linearly between hourly values. Because p uses R&middot;&Delta;t/d, results do not depend on the step length as long as R&middot;&Delta;t &lt; d. The wind and slope terms follow Alexandridis et al. (2008). R0 and the other constants are starting values and need calibration for your region.</p>
 <p>Validation: predicted burnt cells are compared with FIRMS detections (each dilated to its pixel footprint) and with cells where dNBR (or RBR) exceeds the threshold. Precision, recall, F1 and IoU are reported, and the map layer "Model vs reference" shows agreement.</p>
 </details>
 
@@ -109,5 +111,5 @@ Slope            f_slope = exp(0.078&middot;slope_deg), limited to +-45 deg</pre
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@google/earthengine/build/ee_api_js.js"></script>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body></html>
