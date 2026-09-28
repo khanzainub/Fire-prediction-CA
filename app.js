@@ -3,7 +3,7 @@
 const $=id=>document.getElementById(id), clamp=(v,a,b)=>Math.min(b,Math.max(a,v)), sleep=ms=>new Promise(r=>setTimeout(r,ms)),raf=()=>new Promise(r=>requestAnimationFrame(r));
 const addD=(d,n)=>new Date(Date.parse(d+'T00:00:00Z')+n*864e5).toISOString().slice(0,10),isoD=ms=>new Date(ms).toISOString().slice(0,10),daysBetween=(a,b)=>Math.round((Date.parse(b+'T00:00:00Z')-Date.parse(a+'T00:00:00Z'))/864e5);
 const MISSING=-32000,MAXC=1600000,TS=128,NF=new Uint8Array(256);[50,60,70,80].forEach(c=>NF[c]=1);
-let LANG=localStorage.getItem('wf_lang')==='hi'?'hi':'en',MODE='now',AOI=null,G=null,eeReady=false,running=false,rec=null,vc=null,chunks=[],H=null,HROWS=[],FILEROWS=[],RNG=[],SELR=new Set(),LASTSRC='',RAIN_K=.1,MOIST_K=.8,RAND=Math.random,CH=[],MR=[],EXTRA=[],SC=[],ART={},lastPlan=[],preparedKey='',sensitivityDone=false;
+let LANG=localStorage.getItem('wf_lang')==='hi'?'hi':'en',MODE='now',AOI=null,G=null,eeReady=false,running=false,rec=null,vc=null,chunks=[],H=null,HROWS=[],FILEROWS=[],RNG=[],SELR=new Set(),LASTSRC='',FBT=Number(localStorage.getItem('wf_fbt')||0),RAIN_K=.1,MOIST_K=.8,RAND=Math.random,CH=[],MR=[],EXTRA=[],SC=[],ART={},lastPlan=[],preparedKey='',sensitivityDone=false;
 const tr=(en,hi)=>LANG==='hi'?(hi||en):en;
 function translate(){document.documentElement.lang=LANG;document.querySelectorAll('[data-en][data-hi]').forEach(el=>{el.textContent=LANG==='hi'?el.dataset.hi:el.dataset.en});$('lang').textContent=LANG==='hi'?'English / हिन्दी':'हिन्दी / English';drawBG();renderHist();renderExports();translateCharts()}
 $('lang').onclick=()=>{LANG=LANG==='en'?'hi':'en';localStorage.setItem('wf_lang',LANG);translate()};
@@ -28,16 +28,16 @@ $('aoifile').onchange=async e=>{try{if(e.target.files[0])addGJ(JSON.parse(await 
 $('aoisave').onclick=()=>AOI?downloadBlob(new Blob([JSON.stringify({type:'MultiPolygon',coordinates:AOI})],{type:'application/geo+json'}),'aoi.geojson'):log('Draw an area first.','पहले क्षेत्र बनाएँ।');
 const KEYS=['firms','client','project'];for(const k of KEYS)$(k).value=localStorage.getItem('wf_'+k)||'';
 function saveKeys(){for(const k of KEYS){if($('remember').checked)localStorage.setItem('wf_'+k,$(k).value.trim());else localStorage.removeItem('wf_'+k)}}
-const nowD=isoD(Date.now());$('fh0').value=addD(nowD,-365);$('fh1').value=nowD;$('fireDay').value=addD(nowD,-1);$('hs').value=addD(nowD,-1);
+const nowD=isoD(Date.now());$('fh0').value=addD(nowD,-365);$('fh1').value=nowD;$('hs').value=addD(nowD,-1);
 function setMode(m){MODE=m;document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));$('hindbox').hidden=m!=='hind';if(!SELR.size)$('hours').value=({now:12,fore:72,hind:24})[m];dropGrid()}
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>setMode(b.dataset.m));$('sensor').onchange=()=>{dropGrid();log('Satellite changed; prepare data again.','उपग्रह बदला; डेटा फिर तैयार करें।')};
 function datePair(a,b){if(!$(a).value||!$(b).value||$(b).value<$(a).value)throw Error('Check date range: '+a+' / '+b)}
 function P(){for(const[a,b]of[['ww0','ww1'],['dw0','dw1'],['nm0','nm1'],['ndw0','ndw1'],['met0','met1']])datePair(a,b);
  return{moist:clamp(Number($('moist').value)||.8,.05,1),rainK:clamp(Number($('rainK').value)||.1,.001,1),mode:MODE,sensor:$('sensor').value,cell:$('sensor').value==='s2'?10:30,hours:clamp(Number($('hours').value)||12,1,8760),dt:clamp(Number($('dt').value)||2,.25,30),R0:clamp(Number($('r0').value)||10,.01,100),tb:clamp(Number($('tb').value)||20,1,1000),seedR:Math.max(0,Number($('seedr').value)||0),seedmode:$('seedmode').value,look:Math.max(1,Number($('look').value)||24),spc:Math.max(1,Number($('wsp').value)||5),ww0:$('ww0').value,ww1:$('ww1').value,dw0:$('dw0').value,dw1:$('dw1').value,nm0:$('nm0').value,nm1:$('nm1').value,ndw0:$('ndw0').value,ndw1:$('ndw1').value,met0:$('met0').value,met1:$('met1').value,bx:$('bxsel').value,pre:clamp(Number($('pre').value)||45,1,365),post:clamp(Number($('post').value)||45,1,365)}}
 function startMs(){if(MODE==='hind')return Date.parse($('hs').value+'T'+String(clamp(Number($('hh').value)||0,0,23)).padStart(2,'0')+':00:00Z');const n=new Date();n.setUTCMinutes(0,0,0);return +n}
-function planFor(p){if(MODE==='hind'&&SELR.size){const dates=[...SELR].map(i=>RNG[i].a).sort();return[{id:1,start:startMs(),hours:p.hours,dates:new Set(dates)}]}return[{id:1,start:startMs(),hours:p.hours,dates:null}]}
-function suggestDates(){const ranges=[...SELR].map(i=>RNG[i]).sort((x,y)=>x.a.localeCompare(y.a)),a=ranges.length?ranges[0].a:addD(nowD,-3),b=ranges.length?ranges[ranges.length-1].b:nowD;if(!a||!b)return;
- const guess={ww0:addD(a,-210),ww1:addD(a,-90),dw0:addD(a,-65),dw1:addD(a,-1),nm0:addD(a,-30),nm1:addD(b,1),ndw0:addD(a,-30),ndw1:addD(b,1),met0:addD(a,-3),met1:addD(a,Math.max(1,Math.ceil(Number($('hours').value||24)/24)))};
+function planFor(p){if(MODE==='hind'&&SELR.size)return [...SELR].sort((a,b)=>a-b).map(i=>({id:i+1,start:Date.parse(RNG[i].a+'T00:00:00Z'),hours:p.hours,dates:new Set(RNG[i].dates)}));return[{id:1,start:startMs(),hours:p.hours,dates:null}]}
+function suggestDates(){const ranges=[...SELR].map(i=>RNG[i]),a=ranges.length?ranges[0].a:addD(nowD,-3),b=ranges.length?ranges[ranges.length-1].b:nowD;if(!a||!b)return;
+ const guess={ww0:addD(a,-210),ww1:addD(a,-90),dw0:addD(a,-65),dw1:addD(a,-1),nm0:addD(a,-30),nm1:addD(b,1),ndw0:addD(a,-30),ndw1:addD(b,1),met0:addD(a,-3),met1:addD(b,Math.max(1,Math.ceil(Number($('hours').value||24)/24)))};
  for(const[k,v]of Object.entries(guess))if(!$(k).dataset.edited)$(k).value=v}
 for(const id of ['ww0','ww1','dw0','dw1','nm0','nm1','ndw0','ndw1','met0','met1'])$(id).addEventListener('input',()=>{$(id).dataset.edited='1'});suggestDates();
 const DB=new Promise(resolve=>{try{const q=indexedDB.open('wildfire-cache-v2',1);q.onupgradeneeded=()=>q.result.createObjectStore('data');q.onsuccess=()=>resolve(q.result);q.onerror=()=>resolve(null)}catch(_){resolve(null)}});
@@ -130,8 +130,6 @@ async function eeTile(img,x0,y0,tw,th){const reg=ee.Geometry.Rectangle([G.w+(x0+
  const r=await new Promise((ok,no)=>img.sampleRectangle({region:reg,defaultValue:MISSING}).getInfo((v,er)=>er?no(Error(er)):ok(v))),o=r.properties,out={};
  for(const k in o){out[k]=Int16Array.from(o[k].flat());if(out[k].length!==tw*th)throw Error('Earth Engine tile dimension mismatch for '+k+': '+out[k].length+' / '+tw*th)}return out}
 const region=()=>ee.Geometry.Rectangle([G.w,G.s,G.e,G.n],'EPSG:4326',false);
-// Fire history can be requested before Prepare creates the raster grid.
-const fireRegion=()=>{const b=drawn.getBounds();return ee.Geometry.Rectangle([b.getWest(),b.getSouth(),b.getEast(),b.getNorth()],'EPSG:4326',false)};
 async function tiled(img,key,visit){const tiles=[];for(let y=0;y<G.ny;y+=TS)for(let x=0;x<G.nx;x+=TS){const tw=Math.min(TS,G.nx-x),th=Math.min(TS,G.ny-y);let any=false;for(let yy=y;yy<y+th&&!any;yy++)for(let xx=x;xx<x+tw;xx++)if(G.inside[yy*G.nx+xx]){any=true;break}if(any)tiles.push({x,y,tw,th})}
  let at=0,done=0,hit=0,err=null;await Promise.all(Array.from({length:Math.min(3,tiles.length)},async()=>{while(at<tiles.length&&!err){const t=tiles[at++],ck=JSON.stringify([key,t.x,t.y,t.tw,t.th]);try{let o=await idb('get',ck);if(o)hit++;else{o=await eeTile(img,t.x,t.y,t.tw,t.th);await idb('put',ck,o)}for(let y=0;y<t.th;y++)for(let x=0;x<t.tw;x++){const i=(t.y+y)*G.nx+t.x+x;if(G.inside[i])visit(i,o,y*t.tw+x)}}catch(e){err=e}log(`Satellite tiles ${++done}/${tiles.length} (${hit} cached)…`,`उपग्रह टाइल ${done}/${tiles.length} (${hit} कैश से)…`);await raf()}}));if(err)throw err;note('OK','Earth Engine tiles '+done+'; cached '+hit)}
 function updateBase(k=.8){MOIST_K=k;for(let i=0;i<G.N;i++)if(G.inside[i]){const variation=.85+.3*((Math.imul(i,2654435761)>>>0)%1000)/1000;G.base[i]=Math.min(255,Math.round(G.fuel[i]*(1-k*G.moist[i])*variation*255))}}
@@ -167,139 +165,30 @@ async function loadWeatherMeans(p){const loc=G.loc||=metLocations(p),{la,lo,nlx,
  const layer={temp:new Float32Array(G.N),humidity:new Float32Array(G.N),rain:new Float32Array(G.N),wind:new Float32Array(G.N),direction:new Float32Array(G.N)},at=(a,x,y)=>a[y*nlx+x];
  for(let y=0;y<G.ny;y++)for(let x=0;x<G.nx;x++){const i=y*G.nx+x;if(!G.inside[i])continue;const gx=(x+.5)/G.nx*(nlx-1),gy=(y+.5)/G.ny*(nly-1),ix=Math.min(nlx-2,Math.floor(gx)),iy=Math.min(nly-2,Math.floor(gy)),fx=gx-ix,fy=gy-iy;const interp=k=>{let v=0;for(let yy=0;yy<=1;yy++)for(let xx=0;xx<=1;xx++){const a=at(totals,ix+xx,iy+yy);v+=(a[5]?a[k]/a[5]:0)*(xx?fx:1-fx)*(yy?fy:1-fy)}return v};const u=interp(3),v=interp(4);layer.temp[i]=interp(0);layer.humidity[i]=interp(1);layer.rain[i]=interp(2);layer.wind[i]=Math.hypot(u,v);layer.direction[i]=(Math.atan2(u,v)*180/Math.PI+360)%360}
  G.wxLayers=layer;note('OK',`Open-Meteo mean rasters ${p.met0}–${p.met1} (${days} days)`)}
-/* Fire history: NASA FIRMS CSV, optional local CSV, matching Earth Engine VIIRS/MODIS. */
+/* Fire history: NASA FIRMS CSV, optional local CSV, Earth Engine MODIS fallback. */
 function csvRows(text){const rows=[],row=[];let cell='',quoted=false;for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(quoted&&text[i+1]==='"'){cell+='"';i++}else quoted=!quoted}else if(c===','&&!quoted){row.push(cell);cell=''}else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&text[i+1]==='\n')i++;row.push(cell);if(row.some(Boolean))rows.push(row.splice(0));cell=''}else cell+=c}row.push(cell);if(row.some(Boolean))rows.push(row);return rows}
 function parseCSV(txt,source){const rows=csvRows(txt);if(!rows.length)return[];const h=rows.shift().map(s=>s.trim().toLowerCase().replace(/^\ufeff/,'')),ix=s=>h.indexOf(s),la=ix('latitude'),lo=ix('longitude'),ad=ix('acq_date'),at=ix('acq_time'),cf=ix('confidence'),ins=ix('instrument');if(la<0||lo<0||ad<0)throw Error('FIRMS CSV missing latitude, longitude or acq_date.');
  const out=[];for(const c of rows){const hm=String(c[at]||'0000').padStart(4,'0'),t=Date.parse(c[ad]+'T'+hm.slice(0,2)+':'+hm.slice(2)+':00Z'),conf=cf>=0?String(c[cf]||'').trim().toLowerCase():'',b=source||(ins>=0&&/MODIS/i.test(c[ins])?'MODIS':'VIIRS');if(!Number.isFinite(t)||!Number.isFinite(+c[la])||!Number.isFinite(+c[lo]))continue;if($('hiconf').checked&&(conf==='l'||conf==='low'||conf!==''&&Number.isFinite(+conf)&&+conf<30))continue;out.push({la:+c[la],lo:+c[lo],t,date:c[ad],b,confidence:conf,day:false})}return out}
 $('firmsfile').onchange=async e=>{try{FILEROWS=e.target.files[0]?parseCSV(await e.target.files[0].text()):[];log(`${FILEROWS.length} CSV detections loaded.`,`CSV से ${FILEROWS.length} आग की पहचान लोड हुई।`)}catch(x){FILEROWS=[];log('Error: '+x.message)}};
 const bboxStr=()=>{const b=drawn.getBounds();return[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].map(v=>v.toFixed(4)).join(',')};
-async function firmsChunk(key,src,bb,d,nd){
- const url='https://firms.modaps.eosdis.nasa.gov/api/area/csv/'+encodeURIComponent(key)+'/'+src+'/'+bb+'/'+nd+'/'+d;
- const ck=JSON.stringify(['firms7',src,bb,d,nd,$('hiconf').checked]),cached=await idb('get',ck);
- if(cached!==undefined)return cached;
- // Keep the direct FIRMS request used by the earlier working version. A 12 s
- // application timeout was aborting valid slow responses before NASA replied.
- const response=await fetch(url);
- if(!response.ok)throw Error('FIRMS '+src+' '+d+'–'+addD(d,nd-1)+': HTTP '+response.status+' '+(await response.text()).slice(0,120));
- const body=await response.text();
- if(/Invalid MAP_KEY|Error|<html/i.test(body.slice(0,120)))throw Error('FIRMS '+src+' '+d+': '+body.slice(0,120));
- const rows=parseCSV(body,src);
- if(daysBetween(d,nowD)>nd+4)await idb('put',ck,rows);
- return rows
-}
-async function apiDetections(dA,dB,key,bases){const all=[],seen=new Set(),bb=bboxStr();for(let d=dA;d<=dB;d=addD(d,5)){const nd=Math.min(5,daysBetween(d,dB)+1),age=daysBetween(d,nowD);for(const b of bases){let rows=null,lastErr;for(const source of (age>150?[b+'_SP',b+'_NRT']:[b+'_NRT',b+'_SP'])){try{rows=await firmsChunk(key,source,bb,d,nd);break}catch(e){lastErr=e;note('WARN',e.message+'; trying the other FIRMS processing source')}}if(!rows)throw lastErr;for(const r of rows){const k=[r.la,r.lo,r.t,r.b].join('|');if(!seen.has(k)){seen.add(k);all.push(r)}}}log(`FIRMS through ${d}…`,`FIRMS ${d} तक…`)}return all}
-const EE_FIRE={VIIRS_SNPP:{collection:'NASA/LANCE/SNPP_VIIRS/C2',band:'Bright_ti4',scale:375,label:'VIIRS S-NPP EE'},VIIRS_NOAA20:{collection:'NASA/LANCE/NOAA20_VIIRS/C2',band:'Bright_ti4',scale:375,label:'VIIRS NOAA-20 EE'},MODIS:{collection:'FIRMS',band:'T21',scale:1000,label:'MODIS EE'}};
-async function eeFirms(dA,dB,bases=['MODIS']){
- await ensureEE();const reg=fireRegion(),all=[];
- for(const base of [...new Set(bases)]){
-  const spec=EE_FIRE[base];if(!spec)throw Error('Unsupported Earth Engine fire sensor: '+base);
-  for(let d=dA;d<=dB;d=addD(d,5)){
-   const end=addD(d,Math.min(5,daysBetween(d,dB)+1)),key=JSON.stringify(['firmsEE8',base,bboxStr(),d,end,$('hiconf').checked]);
-   let rows=await idb('get',key);
-   if(rows===undefined){
-    const collection=ee.ImageCollection(spec.collection).filterDate(d,end).filterBounds(reg);
-    const count=await new Promise((ok,no)=>collection.size().getInfo((v,e)=>e?no(Error(e)):ok(v)));
-    if(count>50)throw Error('Earth Engine returned too many daily images for '+d+'; use a shorter period.');
-    if(!count){rows=[]}else{
-     const images=collection.toList(count);
-     // The masked fire-temperature band contains detections only; pixelLonLat supplies map coordinates.
-     const fc=ee.FeatureCollection(ee.List.sequence(0,count-1).map(index=>{
-      const im=ee.Image(images.get(index));
-      return im.select([spec.band,'confidence']).addBands(ee.Image.pixelLonLat())
-       .sample({region:reg,scale:spec.scale,geometries:false,tileScale:4})
-       .map(f=>f.set('date',im.date().format('YYYY-MM-dd')))
-     })).flatten();
-     const result=await new Promise((ok,no)=>fc.getInfo((v,e)=>e?no(Error(e)):ok(v)));
-     rows=(result.features||[]).map(f=>f.properties).filter(v=>
-      Number.isFinite(+v.latitude)&&Number.isFinite(+v.longitude)&&
-      (!$('hiconf').checked||(base==='MODIS'?+v.confidence>=30:+v.confidence>=1)))
-      .map(v=>({la:+v.latitude,lo:+v.longitude,date:v.date,t:Date.parse(v.date+'T06:00:00Z'),b:spec.label,day:true}));
-    }
-    if(end<addD(nowD,-5))await idb('put',key,rows);
-   }
-   all.push(...rows);note('OK',spec.label+' '+d+'–'+addD(end,-1)+': '+rows.length+' detections');
-  }
- }
- return all
-}
-async function getDetections(dA,dB){
- if(!AOI)throw Error('Draw an area first.');
- const bs=[['fs_snpp','VIIRS_SNPP'],['fs_noaa','VIIRS_NOAA20'],['fs_modis','MODIS']].filter(([id])=>$(id).checked).map(x=>x[1]);
- const useEE=$('fs_ee').checked,key=$('firms').value.trim();
- if(!bs.length&&!useEE&&!FILEROWS.length)throw Error('Select a fire source or upload CSV.');
- const rows=[],sources=[];
- let needEE=[];
- if(bs.length&&key){
-  try{rows.push(...await apiDetections(dA,dB,key,bs));sources.push('NASA FIRMS')}
-  catch(e){note('WARN','Direct NASA FIRMS unavailable: '+e.message);needEE=bs}
- }else if(bs.length)needEE=bs;
- if(useEE)needEE=[...new Set([...needEE,'MODIS'])];
- // The EE VIIRS collections start in September/October 2023. The older
- // simulator used MODIS EE when direct FIRMS failed; retain that coverage.
- if(needEE.some(b=>b==='VIIRS_SNPP'&&dA<'2023-09-03'||b==='VIIRS_NOAA20'&&dA<'2023-10-08')){
-  needEE=[...new Set([...needEE,'MODIS'])];
-  note('INFO','Selected dates predate an Earth Engine VIIRS collection; adding MODIS EE for historical coverage.')
- }
- if(needEE.length){
-  if(!eeReady){
-   if(!rows.length&&!FILEROWS.length)throw Error('Direct FIRMS could not load. Sign in to Earth Engine in Settings, or upload a FIRMS CSV. A NASA map key alone cannot bypass a blocked browser request.');
-   note('WARN','Earth Engine is not signed in; using only available CSV/API detections.')
-  }else try{rows.push(...await eeFirms(dA,dB,needEE));sources.push(needEE.map(b=>EE_FIRE[b].label).join(' + '))}
-   catch(e){if(!rows.length&&!FILEROWS.length)throw Error('Earth Engine fire data failed: '+e.message);note('WARN','Earth Engine fire data unavailable: '+e.message)}
- }
- rows.push(...FILEROWS);if(FILEROWS.length)sources.push('CSV');LASTSRC=sources.join(' + ');
- const distinct=new Map();for(const r of rows)if(r.date>=dA&&r.date<=dB)distinct.set([r.la,r.lo,r.t,r.b].join('|'),r);
- return[...distinct.values()]
-}
-function buildRanges(){
- const by=new Map();
- for(const r of HROWS){if(!by.has(r.date))by.set(r.date,{a:r.date,b:r.date,dates:[r.date],rows:[]});by.get(r.date).rows.push(r)}
- RNG=[...by.values()].sort((x,y)=>x.a.localeCompare(y.a))
-}
-function renderHist(){
- const box=$('hist'),scroll=box.querySelector('.dates')?.scrollTop||0;box.replaceChildren();
- if(!RNG.length){box.textContent=tr('No detections in the selected area and dates.','चुने क्षेत्र और तारीखों में आग की पहचान नहीं मिली।');return}
- const p=document.createElement('p');
- p.textContent=tr(HROWS.length+' detections on '+RNG.length+' dates ('+LASTSRC+'). Choose dates below, busiest first.',RNG.length+' तारीखों पर '+HROWS.length+' आग की पहचान ('+LASTSRC+')। सबसे अधिक पहचान वाली तारीखें पहले हैं।');
- box.append(p);
- const actions=document.createElement('div');actions.className='smallActions';
- for(const [en,hi,selectAll]of[['Select all','सभी चुनें',true],['Clear all','सभी हटाएँ',false]]){
-  const b=document.createElement('button');b.textContent=tr(en,hi);
-  b.onclick=()=>{SELR.clear();if(selectAll)RNG.forEach((_,i)=>SELR.add(i));applySel()};
-  actions.append(b)
- }
- box.append(actions);
- const dates=document.createElement('div');dates.className='dates';
- const busiest=RNG.map((r,i)=>({r,i})).sort((x,y)=>y.r.rows.length-x.r.rows.length||x.r.a.localeCompare(y.r.a));
- for(const {r,i}of busiest){
-  const b=document.createElement('button');b.className=SELR.has(i)?'sel':'';
-  b.setAttribute('aria-pressed',String(SELR.has(i)));
-  b.textContent=r.a+' ('+r.rows.length+')';
-  b.onclick=()=>{SELR.has(i)?SELR.delete(i):SELR.add(i);applySel()};
-  dates.append(b)
- }
- box.append(dates);dates.scrollTop=scroll
-}
-function applySel(){
- hdots.clearLayers();
- const selected=[...SELR].map(i=>RNG[i]).filter(Boolean).sort((x,y)=>x.a.localeCompare(y.a));
- for(const day of selected)for(const r of day.rows)L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,color:'#fff',weight:1,fillColor:'#fabc46',fillOpacity:1}).addTo(hdots);
- if(selected.length){
-  if(MODE!=='hind'){setMode('hind');$('hours').value='24'}
-  $('hs').value=selected[0].a;$('hh').value='0';suggestDates()
- }
- dropGrid();renderHist();renderTrainEvents();
- log(selected.length?selected.length+' dates selected as one fire inventory.':'No fire dates selected.',selected.length?selected.length+' तारीखें एक fire inventory में चुनी गईं।':'आग की कोई तारीख नहीं चुनी गई।')
-}
-let singleDayRequest='';
-$('daybtn').onclick=()=>{const d=$('fireDay').value;if(!d)return log('Error: Choose an individual fire date.','त्रुटि: आग की एक तारीख चुनें।');$('fh0').value=d;$('fh1').value=d;singleDayRequest=d;$('hbtn').click()};
-$('hbtn').onclick=async()=>{const btn=$('hbtn'),single=singleDayRequest;singleDayRequest='';try{if(!AOI)throw Error('Draw or load an area first.');datePair('fh0','fh1');btn.disabled=true;saveKeys();const rows=await getDetections($('fh0').value,$('fh1').value),bounds=drawn.getBounds();clearHist();dropGrid();HROWS=rows.filter(r=>bounds.contains([r.la,r.lo]));buildRanges();if(single){const i=RNG.findIndex(r=>r.a===single);if(i>=0){SELR.add(i);applySel()}}renderHist();log(`Fire history loaded: ${HROWS.length} points.`,`आग का इतिहास लोड हुआ: ${HROWS.length} बिंदु।`);if(RNG.length)openStep('fireSection')}catch(e){log('Error: '+e.message);if(!RNG.length)$('hist').textContent=tr('Fire data could not load. '+e.message,'आग का डेटा लोड नहीं हुआ। '+e.message)}finally{btn.disabled=false}};
-function eventRows(e,p){
- if(e.dates)return HROWS.filter(r=>e.dates.has(r.date));
- const a=p.mode==='hind'?e.start:e.start-p.look*36e5,b=p.mode==='hind'?e.start+e.hours*36e5:Date.now();
- return HROWS.filter(r=>r.t>=a&&r.t<=b)
-}
-function loadFireForEvent(e,p,allRows){const rows=e.dates?allRows.filter(r=>e.dates.has(r.date)):eventRows(e,p);G.centers=[];G.seedR.clear();G.dets=[];G.obs.fill(0);dots.clearLayers();skippedDots.clearLayers();let selected=0,burnable=0,ignited=0;const unique=new Set();
+async function firmsChunk(key,src,bb,d,nd){const url=`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${encodeURIComponent(key)}/${src}/${bb}/${nd}/${d}`,ck=JSON.stringify(['firms7',src,bb,d,nd,$('hiconf').checked]);let cached=await idb('get',ck);if(cached)return cached;
+ const r=await fetch(url);if(!r.ok)throw Error('FIRMS '+src+': HTTP '+r.status);const body=await r.text();if(/Invalid MAP_KEY|Error|<html/i.test(body.slice(0,120)))throw Error('FIRMS '+src+': '+body.slice(0,100));const rows=parseCSV(body,src);if(daysBetween(d,nowD)>nd+4)await idb('put',ck,rows);return rows}
+async function apiDetections(dA,dB,key,bases){const all=[],seen=new Set(),bb=bboxStr();for(let d=dA;d<=dB;d=addD(d,5)){const nd=Math.min(5,daysBetween(d,dB)+1),age=daysBetween(d,nowD);for(const b of bases){let rows=null,lastErr;for(const source of (age>150?[b+'_SP',b+'_NRT']:[b+'_NRT',b+'_SP'])){try{rows=await firmsChunk(key,source,bb,d,nd);break}catch(e){lastErr=e}}if(!rows)throw lastErr;for(const r of rows){const k=[r.la,r.lo,r.t,r.b].join('|');if(!seen.has(k)){seen.add(k);all.push(r)}}}log(`FIRMS through ${d}…`,`FIRMS ${d} तक…`)}return all}
+async function eeFirms(dA,dB){await ensureEE();const key=JSON.stringify(['firmsEE7',bboxStr(),dA,dB,$('hiconf').checked]),cached=await idb('get',key);if(cached)return cached;
+ const reg=region(),collection=ee.ImageCollection('FIRMS').filterDate(dA,addD(dB,1)).filterBounds(reg),count=await new Promise((ok,no)=>collection.size().getInfo((v,e)=>e?no(Error(e)):ok(v)));if(!count)return[];if(count>500)throw Error('Too many MODIS image dates; use a shorter fire date range.');const images=collection.toList(count),fc=ee.FeatureCollection(ee.List.sequence(0,count-1).map(index=>{const im=ee.Image(images.get(index));return im.select(['T21','confidence']).addBands(ee.Image.pixelLonLat()).sample({region:reg,scale:1000,geometries:false}).map(f=>f.set('date',im.date().format('YYYY-MM-dd')))})).flatten();const r=await new Promise((ok,no)=>fc.getInfo((v,e)=>e?no(Error(e)):ok(v)));const rows=(r.features||[]).map(f=>f.properties).filter(v=>!$('hiconf').checked||v.confidence>=30).map(v=>({la:v.latitude,lo:v.longitude,date:v.date,t:Date.parse(v.date+'T06:00:00Z'),b:'MODIS EE',day:true}));await idb('put',key,rows);return rows}
+async function getDetections(dA,dB){if(!AOI)throw Error('Draw an area first.');const bs=[['fs_snpp','VIIRS_SNPP'],['fs_noaa','VIIRS_NOAA20'],['fs_modis','MODIS']].filter(([id])=>$(id).checked).map(x=>x[1]);const useEE=$('fs_ee').checked,key=$('firms').value.trim();if(!bs.length&&!useEE&&!FILEROWS.length)throw Error('Select a fire source or upload CSV.');let rows=[],fallback=false;
+ if(bs.length){if(!key||Date.now()-FBT<30*60e3){fallback=true;note('WARN',key?'Remembered FIRMS fallback to Earth Engine':'FIRMS key absent; Earth Engine fallback')}else try{rows=await apiDetections(dA,dB,key,bs);LASTSRC='NASA FIRMS'}catch(e){note('ERR','FIRMS failed: '+e.message);fallback=true;FBT=Date.now();localStorage.setItem('wf_fbt',String(FBT))}}
+ if(useEE||fallback){try{const eeRows=await eeFirms(dA,dB);rows.push(...eeRows);LASTSRC=fallback?'MODIS Earth Engine fallback':'NASA FIRMS + Earth Engine'}catch(e){if(!rows.length&&!FILEROWS.length)throw Error('FIRMS failed and Earth Engine fallback failed: '+e.message);note('WARN','EE MODIS unavailable: '+e.message)}}
+ rows.push(...FILEROWS);const distinct=new Map();for(const r of rows)if(r.date>=dA&&r.date<=dB)distinct.set([r.la,r.lo,r.t,r.b].join('|'),r);if(FILEROWS.length)LASTSRC+=' + CSV';return[...distinct.values()]}
+function buildRanges(){const by=new Map();for(const r of HROWS){const day=by.get(r.date)||{date:r.date,rows:[]};day.rows.push(r);by.set(r.date,day)}RNG=[];const gap=clamp(Number($('gap').value)||0,0,365);for(const day of [...by.values()].sort((a,b)=>a.date.localeCompare(b.date))){const prev=RNG.at(-1);if(prev&&daysBetween(prev.b,day.date)<=gap){prev.b=day.date;prev.dates.push(day.date);prev.rows.push(...day.rows)}else RNG.push({a:day.date,b:day.date,dates:[day.date],rows:[...day.rows]})}}
+function renderHist(){const box=$('hist');box.replaceChildren();if(!RNG.length){box.textContent=tr('No detections in the selected area and dates.','चुने क्षेत्र और तारीखों में आग की पहचान नहीं मिली।');return}const p=document.createElement('p');p.textContent=tr(`${HROWS.length} detections in ${RNG.length} numbered ranges (${LASTSRC}).`,`कुल ${HROWS.length} पहचान, ${RNG.length} क्रमांकित रेंज (${LASTSRC})।`);box.append(p);
+ const actions=document.createElement('div');actions.className='smallActions';for(const [txt,hi,fn]of [['Select all','सभी चुनें',()=>{RNG.forEach((_,i)=>SELR.add(i));applySel()}],['Clear all','सभी हटाएँ',()=>{SELR.clear();applySel()}]]){const b=document.createElement('button');b.textContent=tr(txt,hi);b.onclick=fn;actions.append(b)}box.append(actions);
+ const dates=document.createElement('div');dates.className='dates';RNG.forEach((r,i)=>{const b=document.createElement('button');b.className=SELR.has(i)?'sel':'';b.setAttribute('aria-pressed',SELR.has(i));b.textContent=`${i+1}. ${r.a}${r.b!==r.a?' – '+r.b:''} (${r.rows.length})`;b.onclick=()=>{SELR.has(i)?SELR.delete(i):SELR.add(i);applySel()};dates.append(b)});box.append(dates)}
+function applySel(){if(SELR.size){hdots.clearLayers();for(const i of SELR)for(const r of RNG[i].rows)L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,color:'#fff',weight:1,fillColor:'#fabc46',fillOpacity:1}).addTo(hdots);if(MODE!=='hind')setMode('hind');const selected=[...SELR].sort((a,b)=>a-b).map(i=>RNG[i]);$('hs').value=selected[0].a;$('hh').value='0';$('hours').value=Math.max(24,...selected.map(r=>(daysBetween(r.a,r.b)+1)*24));suggestDates()}if(!SELR.size)hdots.clearLayers();dropGrid();renderHist();renderTrainEvents();log(SELR.size?`${SELR.size} fire ranges selected. All detections in each range ignite at t = 0.`:'No fire ranges selected.',SELR.size?`${SELR.size} आग रेंज चुनी गईं। हर रेंज की सभी पहचान समय शून्य पर जलेंगी।`:'कोई आग रेंज नहीं चुनी गई।')}
+$('hbtn').onclick=async()=>{const btn=$('hbtn');try{if(!AOI)throw Error('Draw or load an area first.');datePair('fh0','fh1');btn.disabled=true;saveKeys();const rows=await getDetections($('fh0').value,$('fh1').value),bounds=drawn.getBounds();clearHist();dropGrid();HROWS=rows.filter(r=>bounds.contains([r.la,r.lo]));for(const r of HROWS)L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,color:'#fff',weight:1,fillColor:'#fabc46',fillOpacity:1}).addTo(hdots);buildRanges();renderHist();log(`Fire history loaded: ${HROWS.length} points.`,`आग का इतिहास लोड हुआ: ${HROWS.length} बिंदु।`);if(RNG.length)openStep('fireSection')}catch(e){log('Error: '+e.message)}finally{btn.disabled=false}};
+$('gap').onchange=()=>{const dates=[...SELR].flatMap(i=>RNG[i]?.dates||[]);buildRanges();SELR.clear();RNG.forEach((r,i)=>{if(r.dates.some(d=>dates.includes(d)))SELR.add(i)});applySel()};
+function eventRows(e,p){if(e.dates)return RNG[e.id-1]?.rows||[];const a=p.mode==='hind'?e.start:e.start-p.look*36e5,b=p.mode==='hind'?e.start+e.hours*36e5:Date.now();return HROWS.filter(r=>r.t>=a&&r.t<=b)}
+function loadFireForEvent(e,p,allRows){const rows=eventRows(e,p).length?eventRows(e,p):allRows.filter(r=>{const a=p.mode==='hind'?e.start:e.start-p.look*36e5,b=p.mode==='hind'?e.start+e.hours*36e5:Date.now();return r.t>=a&&r.t<=b});G.centers=[];G.seedR.clear();G.dets=[];G.obs.fill(0);dots.clearLayers();skippedDots.clearLayers();let selected=0,burnable=0,ignited=0;const unique=new Set();
  for(const r of rows){const i=cellAt(r.la,r.lo);if(i<0||!G.inside[i])continue;selected++;const size=r.b.startsWith('MODIS')?500:190,rad=p.seedmode==='footprint'?size:p.seedR,valid=!NF[G.lc[i]]&&G.base[i]>0;
  const marker=L.circleMarker([r.la,r.lo],{pane:'dots',radius:4,color:'#fff',weight:1,fillColor:valid?'#ec4b34':'#5ecbff',fillOpacity:1}).bindPopup(valid?tr('Ignited','प्रज्वलित'):tr('Skipped: blocked or missing fuel','छोड़ा गया: अवरुद्ध या ईंधन अनुपलब्ध'));
  marker.addTo(valid?dots:skippedDots);if(valid){burnable++;if(!unique.has(i)){unique.add(i);G.centers.push(i);G.seedR.set(i,rad);ignited++}G.dets.push({i,rad,t:r.t});disc(i,size,j=>G.obs[j]=1)}}
@@ -408,16 +297,13 @@ async function multiRun(){const b=$('mrun');let oldIm,oldState,oldAge;try{const 
 $('mrun').onclick=multiRun;
 /* Sensitivity and held-out event calibration; identical random stream per candidate. */
 function seeded(n){let x=n|0;return()=>((x=Math.imul(x,1664525)+1013904223|0)>>>0)/4294967296}
-function renderTrainEvents(){
- const box=$('trainEvents');box.replaceChildren();
- if(SELR.size)box.textContent=tr('Selected dates form one fire inventory. Held-out calibration requires at least two independent fire inventories.','चुनी गई तारीखें एक fire inventory बनाती हैं। अलग परीक्षण वाला कैलिब्रेशन करने के लिए कम से कम दो स्वतंत्र fire inventories चाहिए।')
-}
+function renderTrainEvents(){const box=$('trainEvents');box.replaceChildren();if(!SELR.size)return;const p=document.createElement('p');p.textContent=tr('Training ranges (unchecked ranges are held out for testing):','प्रशिक्षण रेंज (बिना चुनी रेंज परीक्षण के लिए अलग):');box.append(p);[...SELR].sort((a,b)=>a-b).forEach((k,j)=>{const l=document.createElement('label');l.className='row';const c=document.createElement('input');c.type='checkbox';c.className='trainEvent';c.dataset.id=String(k+1);c.checked=j<Math.max(1,Math.floor(SELR.size/2));l.append(c,document.createTextNode(`${k+1}. ${RNG[k].a} – ${RNG[k].b}`));box.append(l)})}
 function setCandidate(q){RAIN_K=q.rain;updateBase(q.moist)}
 async function evaluateCandidate(q,indices,rows){const p={...P(),R0:q.R0,tb:q.tb};setCandidate(q);let total=0,number=0,means=[];for(const j of indices){const e=lastPlan[j],r=G.refs[j];if(!r?.has)continue;RAND=seeded(101+j);const m=(await oneSimulation(e,p,rows,{quiet:true})).mask,ref=new Uint8Array(G.N);for(let i=0;i<G.N;i++)if(r.valid[i])ref[i]=r.bx[i]>Number($('bthr').value)*1e4?1:0;const s=calcScores(m,ref,r.valid,clamp(Number($('tol').value)||0,0,2));if(Number.isFinite(s.F1)){total+=s.F1;number++;means.push(s.F1)}}RAND=Math.random;return number?{mean:total/number,individual:means}:null}
 $('sensitivity').onclick=async()=>{const b=$('sensitivity');let im,st,age;try{const p=P();assertPrepared(p);const valid=lastPlan.map((_,j)=>j).filter(j=>G.refs[j]?.has);if(!valid.length)throw Error('At least one event needs clear pre/post burn reference.');running=true;b.disabled=true;im=G.im;st=G.state.slice();age=G.age.slice();G.im=null;const base={R0:p.R0,tb:p.tb,moist:Number($('moist').value)||.8,rain:Number($('rainK').value)||.1},sens=[];for(const key of ['R0','tb','moist','rain'])for(const f of [.75,1,1.25]){const q={...base,[key]:clamp(base[key]*f,key==='moist'?.05:.001,key==='moist'?1:1000)},s=await evaluateCandidate(q,valid,HROWS);sens.push([key,f,s?.mean??NaN]);log(`Sensitivity ${key} × ${f}: ${s?.mean?.toFixed(3)||'N/A'}`,`संवेदनशीलता ${key} × ${f}: ${s?.mean?.toFixed(3)||'उपलब्ध नहीं'}`);await raf()}
  sensitivityDone=true;G.sensitivity=sens;newChart('c9','Sensitivity · F1 by parameter and multiplier',sens.map(x=>x[0]+' ×'+x[1]),sens.map(x=>x[2]),'#45a8cb');ART.calibration={raster:null,plots:['c9'],scores:sens.map(x=>['calibration','sensitivity',x[0]+' × '+x[1],x[2]])};SC.push(...ART.calibration.scores);renderExports();openStep('validationSection')}
  catch(e){log('Error: '+e.message)}finally{if(G){G.im=im||G.im;G.state=st||G.state;G.age=age||G.age;updateBase(Number($('moist').value)||.8);RAIN_K=Number($('rainK').value)||.1}RAND=Math.random;running=false;b.disabled=false}}
-$('calibrate').onclick=async()=>{const b=$('calibrate');let im,st,age;try{const p=P();assertPrepared(p);if(!sensitivityDone)throw Error('Run sensitivity before calibration.');if(lastPlan.length<2)throw Error('Held-out calibration needs at least two independent fire inventories; selected dates form one inventory.');const train=new Set([...document.querySelectorAll('.trainEvent:checked')].map(el=>+el.dataset.id)),trainIdx=lastPlan.map((e,j)=>train.has(e.id)?j:-1).filter(j=>j>=0),testIdx=lastPlan.map((e,j)=>!train.has(e.id)?j:-1).filter(j=>j>=0);if(!trainIdx.length||!testIdx.length||[...trainIdx,...testIdx].some(j=>!G.refs[j]?.has))throw Error('Need clear reference for at least one training and one held-out event.');running=true;b.disabled=true;im=G.im;st=G.state.slice();age=G.age.slice();G.im=null;
+$('calibrate').onclick=async()=>{const b=$('calibrate');let im,st,age;try{const p=P();assertPrepared(p);if(!sensitivityDone)throw Error('Run sensitivity before calibration.');const train=new Set([...document.querySelectorAll('.trainEvent:checked')].map(el=>+el.dataset.id)),trainIdx=lastPlan.map((e,j)=>train.has(e.id)?j:-1).filter(j=>j>=0),testIdx=lastPlan.map((e,j)=>!train.has(e.id)?j:-1).filter(j=>j>=0);if(!trainIdx.length||!testIdx.length||[...trainIdx,...testIdx].some(j=>!G.refs[j]?.has))throw Error('Need clear reference for at least one training and one held-out event.');running=true;b.disabled=true;im=G.im;st=G.state.slice();age=G.age.slice();G.im=null;
  const original={R0:p.R0,tb:p.tb,moist:Number($('moist').value)||.8,rain:Number($('rainK').value)||.1},firstTrain=await evaluateCandidate(original,trainIdx,HROWS),firstTest=await evaluateCandidate(original,testIdx,HROWS);let best={...original},bestScore=firstTrain?.mean??-1;for(const key of ['R0','tb','moist','rain']){let choice=best[key];for(const mul of [.6,1,1.4]){const q={...best,[key]:clamp(best[key]*mul,key==='moist'?.05:.001,key==='moist'?1:1000)},out=await evaluateCandidate(q,trainIdx,HROWS);if((out?.mean??-1)>bestScore){bestScore=out.mean;choice=q[key]}}best[key]=choice;note('INFO',`Calibration ${key}=${choice.toFixed(3)}, training F1=${bestScore.toFixed(3)}`)}const afterTrain=await evaluateCandidate(best,trainIdx,HROWS),afterTest=await evaluateCandidate(best,testIdx,HROWS);
  $('r0').value=best.R0.toFixed(3);$('tb').value=best.tb.toFixed(2);$('moist').value=best.moist.toFixed(3);$('rainK').value=best.rain.toFixed(3);setCandidate(best);
  newChart('c8','Calibration before / after F1',['Train before','Train after','Held-out before','Held-out after'],[firstTrain?.mean,afterTrain?.mean,firstTest?.mean,afterTest?.mean],'#d95639');$('calres').textContent=tr(`Training F1 ${firstTrain?.mean?.toFixed(3)} → ${afterTrain?.mean?.toFixed(3)}; held-out F1 ${firstTest?.mean?.toFixed(3)} → ${afterTest?.mean?.toFixed(3)}. R₀ ${best.R0.toFixed(2)}, burn ${best.tb.toFixed(1)} min, moisture ${best.moist.toFixed(3)}, rain ${best.rain.toFixed(3)}.`,`प्रशिक्षण F1 ${firstTrain?.mean?.toFixed(3)} → ${afterTrain?.mean?.toFixed(3)}; अलग परीक्षण F1 ${firstTest?.mean?.toFixed(3)} → ${afterTest?.mean?.toFixed(3)}। R₀ ${best.R0.toFixed(2)}, जलने का समय ${best.tb.toFixed(1)} मिनट, नमी ${best.moist.toFixed(3)}, वर्षा ${best.rain.toFixed(3)}।`);
