@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wildfire spread simulator</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap">
+<link rel="stylesheet" href="style.css">
+</head><body>
+<div id="map"></div>
+<aside>
+<h1>Wildfire spread simulator</h1>
+<p class="note">Runs in your browser. Keys stay in this browser and go only to Google, NASA and Open-Meteo.</p>
+<div class="tabs"><button data-m="now" class="on">Nowcast</button><button data-m="fore">Forecast</button><button data-m="hind">Hindcast</button></div>
+
+<details open><summary>Accounts</summary>
+<label>NASA FIRMS map key<input id="firms"></label>
+<label>Google OAuth client ID<input id="client" placeholder="xxxx.apps.googleusercontent.com"></label>
+<label>Earth Engine project ID<input id="project"></label>
+<label class="row"><input type="checkbox" id="remember" checked>Remember in this browser</label>
+<button id="signin">Sign in with Google</button><p id="eestatus" class="st">Not signed in.</p>
+</details>
+
+<details open><summary>Area of interest</summary>
+<p class="st">Draw a polygon or rectangle with the tools at top left of the map. Edit or delete with the same toolbar.</p>
+<label>Load GeoJSON<input type="file" id="aoifile" accept=".json,.geojson"></label>
+<button id="aoisave">Save area as GeoJSON</button>
+</details>
+
+<details open><summary>Data</summary>
+<label>Satellite<select id="sensor"><option value="l">Landsat 8/9 (30 m)</option><option value="s2">Sentinel-2 (10 m)</option></select></label>
+<label>Fire detections<select id="fsrc"><option value="VIIRS_SNPP_NRT">VIIRS S-NPP (375 m)</option><option value="VIIRS_NOAA20_NRT">VIIRS NOAA-20 (375 m)</option><option value="MODIS_NRT">MODIS (1 km)</option><option value="ALL">All three combined</option></select></label>
+<div class="two"><label>Green season from<input id="ww0" type="date" value="2025-10-01"></label><label>to<input id="ww1" type="date" value="2025-11-30"></label></div>
+<div class="two"><label>Dry season from<input id="dw0" type="date" value="2026-03-01"></label><label>to<input id="dw1" type="date" value="2026-04-30"></label></div>
+<div id="hindbox" hidden><label>Hindcast start date<input id="hs" type="date" value="2026-04-10"></label></div>
+<label>Cell size (m)<input id="cell" type="number" value="375"></label>
+<label>Weather block (cells per side)<input id="block" type="number" value="10"></label>
+<label class="row"><input type="checkbox" id="noee">Skip Earth Engine (uniform test terrain)</label>
+<button id="clear">Clear saved data cache</button>
+</details>
+
+<details open><summary>Model</summary>
+<label>Time steps (1 step = 1 hour)<input id="steps" type="number" value="12"></label>
+<label>Base spread probability p<sub>h</sub><input id="ph" type="number" step="0.05" value="0.8"></label>
+<label>Burn duration (steps)<input id="tb" type="number" value="2"></label>
+<label class="row"><input type="checkbox" id="vid">Record video (.webm)</label>
+<button id="prep">1. Prepare data</button>
+<button id="run" class="go">2. Run simulation</button>
+<button id="reset">Reset</button>
+<p class="st">You can also click the map to add ignition points.</p><p id="log" class="st"></p>
+<a id="vlink" hidden>Download video</a>
+</details>
+
+<details open><summary>Results</summary>
+<div id="val"></div><canvas id="c1"></canvas><canvas id="c2"></canvas>
+</details>
+
+<details><summary>Model equations</summary>
+<p>Cellular automaton. Cell states: unburnt, burning, burnt, blocked (outside area, water, built-up, bare, snow). Each step, every burning cell tries to ignite its 8 neighbours j from cell i:</p>
+<pre>p = min(1, p_h · F_j · M_j · f_RH · f_T · f_rain · f_wind · f_slope)
+
+Effective fuel   Fn = clamp((NDVI_green − NDVI_dry) / 0.5, 0, 1)
+                 F  = 0.25 + 0.75·Fn
+Moisture         m_v = clamp((NDMI + 0.2) / 0.6, 0, 1)   (leaf water)
+                 m_s = clamp(θ_soil / 0.4, 0, 1)          (soil water)
+                 M   = exp(−2·(0.7·m_v + 0.3·m_s))
+Humidity         f_RH = 1 − 0.9·(RH/100)²
+Temperature      f_T  = exp(0.03·(T − 25))
+Rain             API  = Σ P(t−h)·exp(−h/48), h = 0…72 h
+                 f_rain = exp(−0.3·API)
+Wind             f_wind = exp(c1·V)·exp(c2·V·(cos θ_w − 1))
+                 c1 = 0.045, c2 = 0.131, θ_w = angle between wind
+                 direction (toward) and direction i→j
+Slope            f_slope = exp(0.078·θ_s), θ_s = atan((z_j − z_i)/d)
+                 in degrees, d = cell size (× √2 diagonally)</pre>
+<p>F, M and slope are fixed per cell. RH, T, rain and wind change every hour and are shared by each weather block. The wind and slope terms follow Alexandridis et al. (2008). All other constants are starting values and need calibration for your region.</p>
+<p>Validation (hindcast): predicted burnt cells are compared with FIRMS detections and, when available, with cells where dNBR &gt; 0.1 (NBR before minus NBR after). Precision, recall, F1 and IoU are reported.</p>
+</details>
+
+<details><summary>One-time setup</summary><ol>
+<li>Register a Google Cloud project for Earth Engine.</li>
+<li>Create an OAuth client ID (Web application) and add your page address, for example https://yourname.github.io, under Authorized JavaScript origins.</li>
+<li>Get a FIRMS map key at firms.modaps.eosdis.nasa.gov/api/map_key.</li></ol></details>
+</aside>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@google/earthengine/build/ee_api_js.js"></script>
+<script src="app.js"></script>
+</body></html>
