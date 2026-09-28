@@ -29,3 +29,6 @@ td,th{border-bottom:1px solid var(--line);padding:4px 3px;text-align:right}td:fi
 .leaflet-image-layer{image-rendering:pixelated}
 ol{padding-left:18px;font-size:.82rem;line-height:1.5;color:var(--dim)}
 @media(max-width:760px){body{flex-direction:column}#map{flex:none;height:55vh}aside{width:100%;border-left:0;border-top:2px solid var(--o)}}
+.dates{max-height:150px;overflow:auto;margin:6px 0;line-height:2}
+#hist a{display:inline-block;padding:0 6px;border-radius:4px;border:1px solid transparent}
+#hist a.sel{background:var(--o);color:#fff;border-color:var(--o)}

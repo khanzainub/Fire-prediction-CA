@@ -9,15 +9,15 @@ const addD=(d,n)=>new Date(+new Date(d)+n*864e5).toISOString().slice(0,10),isoD=
 const daysBetween=(a,b)=>Math.round((+new Date(b)-+new Date(a))/864e5);
 const MISSING=-32000,MAXC=4e6,TS=256;             // missing-value marker, max cells, EE tile size (cells)
 const NF=new Uint8Array(256);[50,60,70,80].forEach(c=>NF[c]=1);   // non-flammable WorldCover classes
-let MODE='now',G=null,AOI=null,eeReady=false,running=false,FILEROWS=null,CH=[],rec,chunks,vc,H;
+let MODE='now',G=null,AOI=null,eeReady=false,running=false,FILEROWS=null,CH=[],rec,chunks,vc,H,HROWS=null,HBY={},SEL=new Set(),SKIPN=0,LASTSRC='',FBT=+localStorage.getItem('wf_fbt')||0;
 
 /* ================= map, area of interest ================= */
 const map=L.map('map').setView([29.5,75],8);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors',maxZoom:19}).addTo(map);
-// stacking order (bottom to top): base map < raster layers (450) < fire canvas (same pane, added later) < AOI outline (460) < detection dots (470)
-map.createPane('raster').style.zIndex=450;map.createPane('aoi').style.zIndex=460;map.createPane('dots').style.zIndex=470;
+// stacking order (bottom to top): base map < AOI outline (420) < raster layers (450) < fire canvas (same pane, added later) < detection dots (470)
+map.createPane('aoi').style.zIndex=420;map.createPane('raster').style.zIndex=450;map.createPane('dots').style.zIndex=470;
 const AOI_STYLE={color:'#3b82f6',weight:2.5,opacity:1,fill:false,fillOpacity:0,pane:'aoi'};   // outline only, no fill, so nothing sits over the rasters
-const drawn=L.featureGroup().addTo(map),dots=L.layerGroup().addTo(map);
+const drawn=L.featureGroup().addTo(map),dots=L.layerGroup().addTo(map),hdots=L.layerGroup().addTo(map);   // dots: detections of this run, hdots: fire history
 map.addControl(new L.Control.Draw({edit:{featureGroup:drawn},draw:{polygon:{shapeOptions:AOI_STYLE},rectangle:{shapeOptions:AOI_STYLE},polyline:false,circle:false,marker:false,circlemarker:false}}));
 
 // canvas drawn straight on the map (no PNG encoding per frame), hard pixel edges
@@ -26,7 +26,7 @@ const CanvasOverlay=L.ImageOverlay.extend({_initImage(){const c=this._image=this
 
 function dropGrid(){if(G){G.fo&&G.fo.remove();G.bgo&&G.bgo.remove()}G=null;dots.clearLayers()}
 function setAOI(){const polys=[];drawn.eachLayer(l=>{const g=l.toGeoJSON().geometry;g.type==='Polygon'?polys.push(g.coordinates):g.coordinates.forEach(c=>polys.push(c))});
- AOI=polys.length?polys:null;dropGrid();if(AOI)localStorage.setItem('wf_aoi',JSON.stringify(AOI));log(AOI?'Area set.':'No area.')}
+ AOI=polys.length?polys:null;dropGrid();clearHist();if(AOI)localStorage.setItem('wf_aoi',JSON.stringify(AOI));log(AOI?'Area set.':'No area.')}
 function addGJ(gj){drawn.clearLayers();(gj.features||[gj]).forEach(f=>{const g=f.geometry||f;if(/Polygon/.test(g.type))L.geoJSON(g,{pane:'aoi',style:()=>AOI_STYLE}).eachLayer(l=>drawn.addLayer(l))});
  if(drawn.getLayers().length){map.fitBounds(drawn.getBounds());setAOI()}else log('No polygon found in that file.')}
 map.on(L.Draw.Event.CREATED,e=>{drawn.clearLayers();e.layer.setStyle&&e.layer.setStyle(AOI_STYLE);drawn.addLayer(e.layer);setAOI()});
@@ -238,41 +238,53 @@ async function apiDetections(dA,dB,bb,key){const bases=$('fsrc').value==='ALL'?[
  if(err)throw err;return all}
 async function probeNet(){for(const[n,u]of[['FIRMS','https://firms.modaps.eosdis.nasa.gov/api/'],['Open-Meteo','https://api.open-meteo.com/v1/forecast?latitude=0&longitude=0'],['Google','https://www.gstatic.com/generate_204'],['OSM tiles','https://tile.openstreetmap.org/0/0/0.png']]){
  const t=Date.now();try{await fetch(u,{mode:'no-cors'});note('INFO','probe '+n+': reachable ('+(Date.now()-t)+' ms)')}catch(e){note('ERR','probe '+n+': FAILED ('+e.name+': '+e.message+')')}}}
-async function eeFirms(dA,dB){await ensureEE();if(!eeReady)throw Error('Sign in to Earth Engine to use MODIS fire detections from Earth Engine.');
+async function eeFirms(dA,dB){await ensureEE();const ck=JSON.stringify(['eef',dA,dB,bboxStr(),$('hiconf').checked]),oldE=(Date.now()-new Date(dB))/864e5>3;
+ if(oldE){const c=await idb('get',ck);if(c){LASTSRC='MODIS via Earth Engine (cached)';note('OK','MODIS detections from saved cache: '+c.length);return c}}
+ const rows=await eeFirms0(dA,dB);if(oldE)await idb('put',ck,rows);return rows}
+async function eeFirms0(dA,dB){if(!eeReady)throw Error('Sign in to Earth Engine to use MODIS fire detections from Earth Engine.');
  const b=drawn.getBounds(),reg=ee.Geometry.Rectangle([b.getWest(),b.getSouth(),b.getEast(),b.getNorth()],'EPSG:4326',false),
  fc=ee.ImageCollection('FIRMS').filterDate(dA,addD(dB,1)).filterBounds(reg).map(img=>img.select(['T21','confidence']).addBands(ee.Image.pixelLonLat()).sample({region:reg,scale:1000})
   .map(f=>f.set('date',img.date().format('YYYY-MM-dd')))).flatten();
  log('Fire detections from Earth Engine (MODIS, 1 km)…');
  const r=await new Promise((ok,no)=>fc.getInfo((v,er)=>er?no(Error('Earth Engine FIRMS: '+er)):ok(v)));
  const rows=r.features.map(f=>f.properties).filter(o=>!($('hiconf').checked&&o.confidence<30)).map(o=>({la:o.latitude,lo:o.longitude,date:o.date,t:Date.parse(o.date+'T06:00:00Z'),b:'MODIS',day:true}));
- note('OK','MODIS fire detections via Earth Engine: '+rows.length+' ('+dA+' to '+dB+', day-level times).');return rows}
+ LASTSRC='MODIS via Earth Engine';note('OK','MODIS fire detections via Earth Engine: '+rows.length+' ('+dA+' to '+dB+', day-level times).');return rows}
+const fbOn=()=>eeReady&&Date.now()-FBT<30*60e3;    // once FIRMS failed, MODIS via Earth Engine stays the source for 30 min (not retried on every click)
 async function getDetections(dA,dB,bb,key){
  if($('fsrc').value==='EE'||(!key&&eeReady))return eeFirms(dA,dB);
- try{note('INFO','FIRMS API '+dA+' to '+dB+' bbox '+bb);const rows=await apiDetections(dA,dB,bb,key);note('OK','FIRMS API: '+rows.length+' detections fetched.');return rows}
+ if(fbOn()){note('INFO','FIRMS failed recently: using the MODIS fallback (Earth Engine).');return eeFirms(dA,dB)}
+ try{note('INFO','FIRMS API '+dA+' to '+dB+' bbox '+bb);const rows=await apiDetections(dA,dB,bb,key);LASTSRC='FIRMS API';note('OK','FIRMS API: '+rows.length+' detections fetched.');return rows}
  catch(e){note('ERR','FIRMS API failed: '+e.message);await probeNet();
-  if(eeReady){note('INFO','Falling back to MODIS detections from Earth Engine (1 km, daily).');return eeFirms(dA,dB)}throw e}}
+  if(eeReady){FBT=Date.now();try{localStorage.setItem('wf_fbt',FBT)}catch(_){}note('INFO','Falling back to MODIS detections from Earth Engine (1 km, daily).');LASTSRC='MODIS via Earth Engine (fallback)';return eeFirms(dA,dB)}throw e}}
 const bboxStr=()=>{const b=drawn.getBounds();return[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].map(v=>v.toFixed(4)).join(',')};
 $('firmsfile').onchange=e=>{const f=e.target.files[0];if(!f){FILEROWS=null;return}f.text().then(t=>{FILEROWS=parseCSV(t);log(`Loaded ${FILEROWS.length} detections from the CSV file. They are used instead of the FIRMS API.`)}).catch(x=>{FILEROWS=null;log('CSV error: '+x.message)})};
 async function loadFire(p){const ts=startMs(p),hind=p.mode==='hind',tA=hind?ts:Date.now()-p.look*36e5,tB=hind?ts+p.hours*36e5:Date.now();let rows;
- if(FILEROWS)rows=FILEROWS;else{const key=$('firms').value.trim();if(!key&&$('fsrc').value!=='EE'&&!eeReady){log('No FIRMS key and not signed in to Earth Engine. Click the map to place ignition points.');return null}
+ if(FILEROWS)rows=FILEROWS;else if(hind&&HROWS)rows=HROWS;else{const key=$('firms').value.trim();if(!key&&$('fsrc').value!=='EE'&&!eeReady){log('No FIRMS key and not signed in to Earth Engine. Click the map to place ignition points.');return null}
   rows=await getDetections(isoD(tA),isoD(tB),bboxStr(),key)}
- const seedEnd=hind?ts+6*36e5:tB,seen=new Set();let nd=0;dots.clearLayers();
- for(const r of rows){if(r.day?(r.date<isoD(tA)||r.date>isoD(tB)):(r.t<tA||r.t>tB))continue;const i=cellAt(r.la,r.lo);if(i<0)continue;nd++;const rad=r.b.startsWith('MODIS')?500:190;
+ const useSel=hind&&SEL.size,seedEnd=hind?(useSel?tB:ts+6*36e5):tB,seen=new Set();let nd=0;dots.clearLayers();
+ for(const r of rows){if(useSel&&!SEL.has(r.date))continue;if(r.day?(r.date<isoD(tA)||r.date>isoD(tB)):(r.t<tA||r.t>tB))continue;const i=cellAt(r.la,r.lo);if(i<0)continue;nd++;const rad=r.b.startsWith('MODIS')?500:190;
   G.dets.push({i,rad,t:r.t});disc(i,rad,j=>G.obs[j]=1);L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,weight:1,color:'#fff',fillColor:'#a855f7',fillOpacity:.9}).addTo(dots);
   if((r.day?r.date<=isoD(seedEnd):r.t<=seedEnd)&&!seen.has(i)){seen.add(i);G.centers.push(i)}}
  note(nd?'OK':'WARN',`Fire detections: ${rows.length} fetched, ${nd} inside the area and time window, ${G.centers.length} ignition points.`);
  return{nd,seeds:G.centers.length}}
 
 /* fire history: real detections over a long period */
+function renderHist(){const days=Object.keys(HBY).sort(),tot=days.reduce((a,d)=>a+HBY[d].n,0),A=(a,t,x='')=>`<a href="#" ${a} ${x}>${t}</a>`;
+ $('hist').innerHTML=tot?`<b>${tot}</b> detections on <b>${days.length}</b> dates (${LASTSRC||'loaded'}). Tap dates to select them, or select all, then press 1. Prepare data.<br>`+A('data-all="1"','Select all dates')+' · '+A('data-none="1"','Clear selection')+
+  `<div class="dates">`+days.map(d=>`<a href="#" data-d="${d}" class="${SEL.has(d)?'sel':''}">${d} (${HBY[d].n})</a>`).join(' ')+`</div><b>${SEL.size}</b> selected${SKIPN?`, ${SKIPN} of them fall after the ${$('hours').value} h window and will be ignored (raise Duration, max 240 h)`:''}.`
+  :'No detections in this area and period. If this looks wrong, check the date range and the FIRMS key.'}
+function applySel(){SKIPN=0;if(!SEL.size)return;const ds=[...SEL].sort();if(MODE!=='hind')document.querySelector('.tabs button[data-m=hind]').click();
+ $('hs').value=ds[0];$('hh').value=new Date(HBY[ds[0]].t).getUTCHours();
+ const t0=startMs(P()),need=Math.ceil((Date.parse(ds[ds.length-1]+'T23:59:00Z')-t0)/36e5)+6;$('hours').value=clamp(need,12,240);
+ const t1=t0+clamp(need,12,240)*36e5;SKIPN=ds.filter(d=>d>isoD(t1)).length}
 $('hbtn').onclick=async()=>{const b=$('hbtn');try{if(!AOI)return log('Draw or load an area first.');const key=$('firms').value.trim();if(!key&&!FILEROWS&&!eeReady)return log('Enter a FIRMS key or sign in to Earth Engine first.');b.disabled=true;saveKeys();
- const dA=$('fh0').value,dB=$('fh1').value,rows=FILEROWS||await getDetections(dA,dB,bboxStr(),key),bd=drawn.getBounds();dots.clearLayers();
- const by={};for(const r of rows){if(r.date<dA||r.date>dB||!bd.contains([r.la,r.lo]))continue;const o=by[r.date]||(by[r.date]={n:0,t:1e15});o.n++;o.t=Math.min(o.t,r.t);
-  L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,weight:1,color:'#fff',fillColor:'hsl('+(+r.date.slice(5,7)*30)+',90%,55%)',fillOpacity:.9}).addTo(dots)}
- const days=Object.keys(by),tot=days.reduce((s,d)=>s+by[d].n,0),top=days.sort((a,c)=>by[c].n-by[a].n).slice(0,6);
- $('hist').innerHTML=tot?`<b>${tot}</b> detections on <b>${days.length}</b> days between ${dA} and ${dB}. Busiest days (tap one to set up a hindcast):<br>`+top.map(d=>`<a href="#" data-d="${d}" data-h="${new Date(by[d].t).getUTCHours()}">${d} (${by[d].n})</a>`).join(' · ')
-  :'No detections in this area and period. If this looks wrong, check the date range and the FIRMS key.';
- log(`Fire history: ${tot} detections.`)}catch(e){log('Error: '+(e.message||e))}finally{b.disabled=false}};
-$('hist').onclick=e=>{const a=e.target.closest('a[data-d]');if(!a)return;e.preventDefault();$('hs').value=a.dataset.d;$('hh').value=a.dataset.h;document.querySelector('.tabs button[data-m=hind]').click();$('hs').value=a.dataset.d;$('hh').value=a.dataset.h};
+ const dA=$('fh0').value,dB=$('fh1').value,rows=FILEROWS||await getDetections(dA,dB,bboxStr(),key),bd=drawn.getBounds();clearHist();dropGrid();
+ const keep=[];for(const r of rows){if(r.date<dA||r.date>dB||!bd.contains([r.la,r.lo]))continue;keep.push(r);const o=HBY[r.date]||(HBY[r.date]={n:0,t:1e15});o.n++;o.t=Math.min(o.t,r.t);
+  L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,weight:1,color:'#fff',fillColor:'hsl('+(+r.date.slice(5,7)*30)+',90%,55%)',fillOpacity:.9}).addTo(hdots)}
+ HROWS=keep;if(FILEROWS)LASTSRC='CSV file';renderHist();log(`Fire history: ${keep.length} detections on ${Object.keys(HBY).length} dates.`)}catch(e){log('Error: '+(e.message||e))}finally{b.disabled=false}};
+$('hist').onclick=e=>{const a=e.target.closest('a');if(!a)return;e.preventDefault();
+ if(a.dataset.all)Object.keys(HBY).forEach(d=>SEL.add(d));else if(a.dataset.none)SEL.clear();else if(a.dataset.d){const d=a.dataset.d;SEL.has(d)?SEL.delete(d):SEL.add(d)}else return;
+ applySel();renderHist()};
 
 /* ================= prepare ================= */
 function mkOverlays(){const{nx,ny,w,e,s,n}=G,mk=()=>{const c=document.createElement('canvas');c.width=nx;c.height=ny;return c},bb=[[s,w],[n,e]];
@@ -345,7 +357,9 @@ function charts(){CH.forEach(c=>c&&c.destroy());Chart.defaults.color='#c9b8b0';C
    {y:ax('left','°C','#e11d2e'),y1:ax('right','% RH','#38bdf8',{min:0,max:100})})]}
 
 /* ================= run ================= */
-$('reset').onclick=()=>{running=false;if(G){resetState(+$('seedr').value||60);log('Reset.')}};
+function clearHist(){hdots.clearLayers();HROWS=null;HBY={};SEL.clear();SKIPN=0;const h=$('hist');if(h)h.innerHTML=''}
+$('reset').onclick=()=>{running=false;dropGrid();dots.clearLayers();clearHist();$('val').innerHTML='';$('vlink').hidden=true;if($('legend'))$('legend').textContent='';
+ CH.forEach(c=>c&&c.destroy());CH=[];log('Reset: fire, layers, history, dates and results cleared. Your area is kept. Start again with Show fire history.')}
 function diag(p){try{const i=G.act[0],x=i%G.nx,y=(i/G.nx)|0;setWeather(0);wxAt(x,y,G.z[i]);let bs=0,n=0;for(let j=0;j<G.N;j+=7)if(G.inside[j]&&!NF[G.lc[j]]){bs+=G.base[j];n++}
  const b=bs/Math.max(1,n)/255,R=p.R0*b*fWx();
  note(R<.05?'WARN':'OK',`Spread check at t=0: wind ${wV.toFixed(1)} m/s, T ${wT.toFixed(1)} C, RH ${Math.round(wRH)}%, rain index ${wA.toFixed(1)} mm. Factors: RH ${fRH(wRH).toFixed(2)}, T ${fT(wT).toFixed(2)}, rain ${fRain(wA).toFixed(2)}, mean fuel×moisture ${b.toFixed(2)}. Mean R about ${R.toFixed(2)} m/min (before wind and slope), so about ${(R*p.hours*60).toFixed(0)} m of front travel in ${p.hours} h.${R<.05?' Very slow: raise R0 or check fuel/moisture layers.':''}`)}catch(e){note('WARN','diag failed: '+e.message)}}
