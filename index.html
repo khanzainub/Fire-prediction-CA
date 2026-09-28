@@ -8,8 +8,9 @@
 <link rel="stylesheet" href="style.css">
 </head><body>
 <div id="map"></div>
-<aside>
+<aside id="panel">
 <h1>Wildfire spread simulator</h1>
+<div><button id="lang">हिन्दी</button></div>
 <p class="note">Runs in your browser. Keys stay in this browser and go only to Google, NASA and Open-Meteo.</p>
 <div class="tabs"><button data-m="now" class="on">Nowcast</button><button data-m="fore">Forecast</button><button data-m="hind">Hindcast</button></div>
 
@@ -20,28 +21,30 @@
 <label class="row"><input type="checkbox" id="remember" checked>Remember in this browser</label>
 <button id="signin">Sign in with Google</button><p id="eestatus" class="st">Not signed in.</p>
 </details>
-
 <details open><summary>Area of interest</summary>
 <p class="st">Draw a polygon or rectangle with the tools at top left of the map. Edit or delete with the same toolbar.</p>
 <label>Load GeoJSON<input type="file" id="aoifile" accept=".json,.geojson"></label>
 <button id="aoisave">Save area as GeoJSON</button>
 </details>
-
-<details open><summary>Data</summary>
+<details open><summary>Fire data and environmental data</summary>
 <label>Satellite (sets the cell size)<select id="sensor"><option value="l">Landsat 8/9 (30 m cells)</option><option value="s2">Sentinel-2 (10 m cells)</option></select></label>
 <label>Cell size (m)<input id="cell" type="number" value="30"></label>
-<label>Fire detections<select id="fsrc"><option value="VIIRS_SNPP">VIIRS S-NPP (375 m)</option><option value="VIIRS_NOAA20">VIIRS NOAA-20 (375 m)</option><option value="MODIS">MODIS (1 km)</option><option value="ALL">All three combined</option><option value="EE">MODIS via Earth Engine (1 km, daily)</option></select></label>
+<p class="st">Fire sources (select any)</p><label class="row"><input type="checkbox" id="fs_snpp" checked>VIIRS S-NPP (375 m)</label><label class="row"><input type="checkbox" id="fs_noaa">VIIRS NOAA-20 (375 m)</label><label class="row"><input type="checkbox" id="fs_modis">MODIS (1 km)</label><label class="row"><input type="checkbox" id="fs_ee">MODIS via Earth Engine (1 km, daily)</label>
 <label class="row"><input type="checkbox" id="hiconf" checked>Ignore low-confidence detections</label>
 <label>Load FIRMS CSV (optional, used instead of the API)<input type="file" id="firmsfile" accept=".csv,.txt"></label>
 <div class="two"><label>Fire history from<input id="fh0" type="date"></label><label>to<input id="fh1" type="date"></label></div>
-<p class="st"><b>Order:</b> Show fire history, pick dates (or Select all), then 1. Prepare data, then 2. Run simulation. Reset clears everything except your area.</p><button id="hbtn">Show fire history on map</button><p id="hist" class="st"></p>
+<p class="st"><b>Order:</b> Show fire history, pick date ranges (or Select all), then 1. Prepare data, then 2. Run simulation. Reset clears everything except your area.</p><label>Merge dates closer than (days) into one range<input id="gap" type="number" min="0" value="3"></label><button id="hbtn">Show fire history on map</button><p id="hist" class="st"></p>
 <div class="two"><label>Green season from<input id="ww0" type="date" value="2025-10-01"></label><label>to<input id="ww1" type="date" value="2025-11-30"></label></div>
 <div class="two"><label>Dry season from<input id="dw0" type="date" value="2026-03-01"></label><label>to<input id="dw1" type="date" value="2026-04-30"></label></div>
 <label>Weather point spacing (km)<input id="wsp" type="number" step="0.5" value="5"></label>
 <label class="row"><input type="checkbox" id="noee">Skip Earth Engine (uniform test terrain)</label>
 <button id="clear">Clear saved data cache</button>
 </details>
-
+<details open><summary>Map layer</summary>
+<label><select id="lyr"><option value="none">Fire only</option><option value="fuel">Fuel × moisture (spread potential)</option><option value="z">Elevation</option><option value="lc">Land cover</option><option value="obs">FIRMS detections (reference)</option><option value="slope">Slope</option><option value="water">Water mask</option><option value="prob">Burn probability (multi-run)</option><option value="bi">Burn scar (dNBR / RBR)</option><option value="cmp">Model vs reference</option></select></label>
+<label>Layer opacity (%)<input id="lop" type="range" min="30" max="100" value="90"></label>
+<p id="legend" class="st"></p>
+</details>
 <details open><summary>Model</summary>
 <div id="hindbox" hidden><div class="two"><label>Hindcast start date<input id="hs" type="date" value="2026-04-10"></label><label>Hour (UTC)<input id="hh" type="number" min="0" max="23" value="6"></label></div></div>
 <label>Duration (hours)<input id="hours" type="number" value="12"></label>
@@ -54,33 +57,24 @@
 <button id="prep">1. Prepare data</button>
 <button id="run" class="go">2. Run simulation</button>
 <button id="reset">Reset</button>
-<p class="st">You can also click the map to add ignition points.</p><p id="log" class="st"></p>
+<p class="st">You can also click the map to add ignition points.</p><p id="log" class="st"></p><div id="checks" class="st"></div>
 <a id="vlink" hidden>Download video</a>
 </details>
-
-<details open><summary>Map layer</summary>
-<label><select id="lyr"><option value="none">Fire only</option><option value="fuel">Fuel × moisture (spread potential)</option><option value="z">Elevation</option><option value="lc">Land cover</option><option value="obs">FIRMS detections (reference)</option><option value="slope">Slope</option><option value="bi">Burn scar (dNBR / RBR)</option><option value="cmp">Model vs reference</option></select></label>
-<label>Layer opacity (%)<input id="lop" type="range" min="30" max="100" value="90"></label>
-<p id="legend" class="st"></p>
+<details open><summary>Log (errors and loaded data)</summary>
+<pre id="elog" style="max-height:220px;overflow:auto;white-space:pre-wrap;font-size:.68rem"></pre><button id="copylog">Copy log</button>
 </details>
-
 <details><summary>Validation</summary>
 <label class="row"><input type="checkbox" id="usebi">Fetch burn-scar reference from satellite</label>
 <label>Burn index<select id="bxsel"><option value="dnbr">dNBR (pre minus post NBR)</option><option value="rbr">RBR (relative burn ratio)</option></select></label>
 <label>Burnt if index &gt;<input id="bthr" type="number" step="0.05" value="0.1"></label>
 <div class="two"><label>Pre-fire window (days)<input id="pre" type="number" value="45"></label><label>Post-fire window (days)<input id="post" type="number" value="45"></label></div>
-<button id="validate">Validate last run</button>
+<label>Tolerance (cells)<input id="tol" type="number" min="0" max="3" value="1"></label><button id="validate">Validate last run</button><label>Runs<input id="nrun" type="number" min="2" max="60" value="10"></label><button id="mrun">Run N times: probability, ROC, PR</button>
 <p class="st">Runs automatically after a simulation when a reference exists. FIRMS is always used if detections were loaded. Changing the burn index or windows needs 1. Prepare data again.</p>
 </details>
-
-<details open><summary>Log (errors and loaded data)</summary>
-<pre id="elog" style="max-height:220px;overflow:auto;white-space:pre-wrap;font-size:.68rem"></pre><button id="copylog">Copy log</button>
-</details>
-
 <details open><summary>Results</summary>
-<div id="val"></div><div class="chart"><canvas id="c1"></canvas></div><div class="chart"><canvas id="c2"></canvas></div><div class="chart"><canvas id="c3"></canvas></div>
+<div id="val"></div><div id="mrres" class="st"></div><div class="chart"><canvas id="c4"></canvas></div><div class="chart"><canvas id="c5"></canvas></div><button id="dlplots">Download plots (PNG)</button><button id="dlcsv">Download scores (CSV)</button><div class="chart"><canvas id="c1"></canvas></div><div class="chart"><canvas id="c2"></canvas></div><div class="chart"><canvas id="c3"></canvas></div>
 </details>
-
+<details><summary>About the simulator</summary><p><b>Developer:</b> Zainab Khan, PhD, former postdoctoral fellow, IIT Roorkee, India.<br>Contact: <a href="mailto:khanzainub@gmail.com">khanzainub@gmail.com</a></p><p><b>How to use</b></p><ol><li>Sign in (Accounts) and draw or load an area.</li><li>Choose the mode: Nowcast, Forecast or Hindcast.</li><li>Choose fire sources and a date range, press Show fire history on map, then select date ranges.</li><li>Choose the satellite and the season windows, press 1. Prepare data and check the ✔/✖ list.</li><li>Adjust simulation parameters if needed, then press 2. Run simulation.</li><li>Validation: tick Fetch burn-scar reference before Prepare, then run Validate or Run N times.</li><li>Download plots and scores from Results. Reset clears everything except keys and sign-in.</li></ol></details>
 <details><summary>Model equations</summary>
 <p>Cellular automaton on a square raster (30 m for Landsat, 10 m for Sentinel-2). Cell states: unburnt, burning, burnt, blocked (outside area, water, built-up, bare, snow). Every step of &Delta;t minutes, each burning cell tries to ignite its 8 neighbours j (distance d, &times;&radic;2 on diagonals):</p>
 <pre>p = 1 - exp(-R &middot; &Delta;t / d)
@@ -101,7 +95,6 @@ Slope            f_slope = exp(0.078&middot;slope_deg), limited to +-45 deg</pre
 <p>A burning cell keeps burning for at least the burn duration, and then for as long as it still has an unburnt flammable neighbour (at most 12 times the burn duration). This lets the fire front advance at R even when R &middot; burn duration is smaller than one cell; the humidity, temperature and rain terms are floored so humid or wet weather slows the fire without stopping it. F, M and slope are fixed per cell (from satellite and SRTM at native resolution). Weather comes from a lattice of Open-Meteo points and is interpolated to every cell each step: wind as u/v vectors (bilinear), temperature reduced to sea level, interpolated and lowered again with the 30 m DEM (6.5 K/km), humidity from interpolated vapour pressure and the cell temperature, rain index bilinear. Time is interpolated linearly between hourly values. Because p uses R&middot;&Delta;t/d, results do not depend on the step length as long as R&middot;&Delta;t &lt; d. The wind and slope terms follow Alexandridis et al. (2008). R0 and the other constants are starting values and need calibration for your region.</p>
 <p>Validation: predicted burnt cells are compared with FIRMS detections (each dilated to its pixel footprint) and with cells where dNBR (or RBR) exceeds the threshold. Precision, recall, F1 and IoU are reported, and the map layer "Model vs reference" shows agreement.</p>
 </details>
-
 <details><summary>One-time setup</summary><ol>
 <li>Register a Google Cloud project for Earth Engine.</li>
 <li>Create an OAuth client ID (Web application) and add your page address, for example https://yourname.github.io, under Authorized JavaScript origins.</li>
@@ -111,5 +104,5 @@ Slope            f_slope = exp(0.078&middot;slope_deg), limited to +-45 deg</pre
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@google/earthengine/build/ee_api_js.js"></script>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=7"></script>
 </body></html>
