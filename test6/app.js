@@ -415,7 +415,7 @@ function slopeOf(){if(G.slope)return G.slope;const{nx,ny,z,cell,demMissing}=G,sl
  return G.slope=sl}
 function metValue(i,v){const M=G.M;if(!M?.avg?.[v])return null;const x=i%G.nx,y=(i-x)/G.nx,gx=clamp((x+.5)/G.nx*(M.nlx-1),0,M.nlx-1),gy=clamp((y+.5)/G.ny*(M.nly-1),0,M.nly-1),x0=Math.min(M.nlx-2,Math.floor(gx)),y0=Math.min(M.nly-2,Math.floor(gy)),fx=gx-x0,fy=gy-y0,a=M.avg[v],k=y0*M.nlx+x0;return a[k]*(1-fx)*(1-fy)+a[k+1]*fx*(1-fy)+a[k+M.nlx]*(1-fx)*fy+a[k+M.nlx+1]*fx*fy}
 function drawBG(){if(!G||!G.bgc)return;const v=$('lyr').value,{nx,ny,N,inside,base,z,lc,bx,obs,state}=G,c=G.bgc.getContext('2d'),im=c.createImageData(nx,ny),d=im.data,thr=(+$('bthr').value||.1)*1e4,lg=$('legend');
- if(G.fo)G.fo.setOpacity(['observed','baseline','calibrated','difference'].includes(v)?0:1);
+ if(G.fo)G.fo.setOpacity(['observed','baseline','calibrated','difference','species','foliage'].includes(v)?0:1);
  let zmin=1e9,zmax=-1e9,sl=null,msg='',lmin=1e9,lmax=-1e9;
  if(v==='z'){for(let i=0;i<N;i++)if(inside[i]&&!G.demMissing[i]){if(z[i]<zmin)zmin=z[i];if(z[i]>zmax)zmax=z[i]}msg=zmin<=zmax?`Raw ${$('dem').selectedOptions[0].text} elevation ${zmin} to ${zmax} m; nearest-neighbour cells (blue low, red high).`:'DEM has no valid cells.'}
  if(v==='lst'){for(let i=0;i<N;i++)if(inside[i]&&G.lst[i]!==MISSING){const t=G.lst[i]/100;lmin=Math.min(lmin,t);lmax=Math.max(lmax,t)}msg=lmin<=lmax?`Pre-fire Landsat LST ${lmin.toFixed(1)} to ${lmax.toFixed(1)} °C; nearest neighbour, no spatial interpolation.`:'No clear pre-fire LST in the selected window.'}
