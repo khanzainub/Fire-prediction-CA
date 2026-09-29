@@ -461,7 +461,7 @@ function saveBlob(blob,name){const url=URL.createObjectURL(blob),a=document.crea
 function tiffRaster(values){const n=G.N,width=G.nx,height=G.ny,tags=[
  [256,4,1,width],[257,4,1,height],[258,3,1,8],[259,3,1,1],[262,3,1,1],[273,4,1,0],[277,3,1,1],[278,4,1,height],[279,4,1,n],[284,3,1,1],[33550,12,3,0],[33922,12,6,0],[34735,3,16,0]];
  const ifd=8,extra=ifd+2+tags.length*12+4,scaleOff=extra,tieOff=scaleOff+24,geoOff=tieOff+48,dataOff=geoOff+32,size=dataOff+n;if(size>400e6)throw Error('GeoTIFF exceeds 400 MB; draw a smaller area.');
- tags[5][3]=dataOff;tags[11][3]=scaleOff;tags[12][3]=tieOff;tags[13][3]=geoOff;const buf=new ArrayBuffer(size),v=new DataView(buf),bytes=new Uint8Array(buf);v.setUint16(0,0x4949,true);v.setUint16(2,42,true);v.setUint32(4,ifd,true);v.setUint16(ifd,tags.length,true);let o=ifd+2;
+ tags[5][3]=dataOff;tags[10][3]=scaleOff;tags[11][3]=tieOff;tags[12][3]=geoOff;const buf=new ArrayBuffer(size),v=new DataView(buf),bytes=new Uint8Array(buf);v.setUint16(0,0x4949,true);v.setUint16(2,42,true);v.setUint32(4,ifd,true);v.setUint16(ifd,tags.length,true);let o=ifd+2;
  for(const [tag,type,count,value] of tags){v.setUint16(o,tag,true);v.setUint16(o+2,type,true);v.setUint32(o+4,count,true);if(type===3&&count===1)v.setUint16(o+8,value,true);else v.setUint32(o+8,value,true);o+=12}v.setUint32(o,0,true);
  [G.dx,G.dy,0].forEach((x,i)=>v.setFloat64(scaleOff+8*i,x,true));[0,0,0,G.w,G.n,0].forEach((x,i)=>v.setFloat64(tieOff+8*i,x,true));[1,1,0,3,1024,0,1,2,1025,0,1,1,2048,0,1,4326].forEach((x,i)=>v.setUint16(geoOff+2*i,x,true));
  bytes.set(values,dataOff);return new Blob([buf],{type:'image/tiff'})}
