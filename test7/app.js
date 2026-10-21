@@ -285,11 +285,42 @@ async function loadEE(p){const{nx,ny,N}=G;
 function makeVariation(N){const out=new Float32Array(N);let x=0x72ae391d;for(let i=0;i<N;i++){x^=x<<13;x^=x>>>17;x^=x<<5;out[i]=.95+(x>>>0)/4294967296*.1}return out}
 function applyBareRules(){const values=[];for(let i=0;i<G.N;i++)if(G.inside[i]&&!NF[G.lc[i]]&&G.bsi[i]!==MISSING)values.push(G.bsi[i]);if(values.length<20){note('WARN','BSI has fewer than 20 usable cells; bare-soil percentile rule inactive.');return}values.sort((a,b)=>a-b);const q80=values[Math.floor((values.length-1)*.8)],q95=values[Math.floor((values.length-1)*.95)];if(q95<=q80){note('WARN','BSI has no upper-tail variation; bare-soil percentile rule inactive.');return}let slow=0,blocked=0;for(let i=0;i<G.N;i++)if(G.inside[i]&&G.bsi[i]!==MISSING){const t=clamp((G.bsi[i]-q80)/(q95-q80),0,1);G.bareFactor[i]=1-.65*t;if(t>0)slow++;if(G.bsi[i]>=q95&&G.recent[i]>5500){G.hardBare[i]=1;blocked++}}note('OK',`BSI thresholds: 80th ${(q80/1e4).toFixed(3)}, 95th ${(q95/1e4).toFixed(3)}; ${slow} slowed, ${blocked} blocked with recent NDVI > 0.55.`)}
 /* OpenStreetMap line geometry is used as a surface-fire barrier, not the basemap tiles. */
-async function loadLinearBarriers(){const b=G,box=[b.s,b.w,b.n,b.e].map(x=>x.toFixed(5)).join(','),key='osm-barriers-7:'+box;let ways=USER_LINES||await idb('get',key);
- if(ways)prepStage('barriers','active',USER_LINES?'Using uploaded road/river geometry':'Using cached road/river geometry',.8);
- if(!ways){const query=`[out:json][timeout:30];(way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|track)$"](${box});way["waterway"~"^(river|stream|canal)$"]["intermittent"!="yes"](${box}););out geom;`;
-  const hosts=['https://overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter','https://overpass.osm.jp/api/interpreter'],preferred=localStorage.getItem('wf_osm_host');if(hosts.includes(preferred)){hosts.splice(hosts.indexOf(preferred),1);hosts.unshift(preferred)}
-  let error;for(const [n,host] of hosts.entries()){prepStage('barriers','active',`Online geometry source ${n+1}/${hosts.length}…`,n/hosts.length);const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),22000);try{const r=await fetch(host+'?data='+encodeURIComponent(query),{signal:controller.signal});if(!r.ok)throw Error(`HTTP ${r.status}`);const data=await r.json();if(!Array.isArray(data.elements)||data.remark&&/error|runtime/i.test(data.remark))throw Error(data.remark||'OSM geometry missing');ways=data.elements.filter(x=>x.type==='way'&&Array.isArray(x.geometry)&&x.geometry.length>1).map(x=>({geometry:x.geometry,kind:x.tags?.highway?'road':'river'}));await idb('put',key,ways);localStorage.setItem('wf_osm_host',host);break}catch(e){error=e;note('WARN','OSM barrier source: '+host+' '+e.message);prepStage('barriers','active',`Source ${n+1}/${hosts.length} failed: ${e.message}`,n/hosts.length)}finally{clearTimeout(timer)}}if(!ways)throw Error('Road/river geometry could not be loaded: '+error?.message+'. Upload road/river lines GeoJSON under Area of interest, then press Prepare Data again.')}
+// Cache failures must not turn a successful network response into a preparation failure.
+async function osmCache(method,key,value){let timer;try{return await Promise.race([idb(method,key,value),new Promise(resolve=>{timer=setTimeout(resolve,1500)})])}catch(e){note('WARN','OSM cache unavailable: '+e.message)}finally{clearTimeout(timer)}}
+function validOSMWays(ways){return Array.isArray(ways)&&ways.every(w=>(w.kind==='road'||w.kind==='river')&&Array.isArray(w.geometry)&&w.geometry.length>1&&w.geometry.every(p=>p&&Number.isFinite(p.lat)&&Number.isFinite(p.lon)&&Math.abs(p.lat)<=90&&Math.abs(p.lon)<=180))}
+async function fetchOSMBarriers(box){
+ const key='osm-barriers-8:'+box,cached=await osmCache('get',key),ttl=7*86400000;
+ if(cached&&Number.isFinite(cached.savedAt)&&Date.now()-cached.savedAt>=0&&Date.now()-cached.savedAt<ttl&&validOSMWays(cached.ways)){prepStage('barriers','active','Using cached road/river geometry',.8);return cached.ways}
+ // Preserve the existing feature selection and full way coordinates.
+ const query=`[out:json][timeout:25];(way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|track)$"](${box});way["waterway"~"^(river|stream|canal)$"]["intermittent"!="yes"](${box}););out geom qt;`;
+ const hosts=['https://overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter','https://overpass.osm.jp/api/interpreter'];
+ try{const preferred=localStorage.getItem('wf_osm_host');if(hosts.includes(preferred)){hosts.splice(hosts.indexOf(preferred),1);hosts.unshift(preferred)}}catch(e){}
+ let error;const cooldown=new Map(),disabled=new Set();
+ // One bounded retry round, rotating hosts first. POST avoids URL limits; GET
+ // on retry also handles servers/proxies that reject POST. Both are CORS-simple.
+ for(let round=0;round<2;round++){
+  if(round)await new Promise(resolve=>setTimeout(resolve,2000+Math.random()*1000));
+  for(const [n,host] of hosts.entries()){
+   if(disabled.has(host)||Date.now()<(cooldown.get(host)||0))continue;
+   prepStage('barriers','active',`Online geometry source ${n+1}/${hosts.length} · attempt ${round+1}/2…`,(round*hosts.length+n)/(2*hosts.length));
+   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),60000);
+   try{
+    const body=new URLSearchParams({data:query}),r=await fetch(round?host+'?'+body:host,round?{signal:controller.signal}:{method:'POST',body,signal:controller.signal});
+    if(!r.ok){const retryAfter=r.headers.get('Retry-After');if(retryAfter){const seconds=Number(retryAfter),until=Number.isFinite(seconds)?Date.now()+seconds*1000:Date.parse(retryAfter);if(Number.isFinite(until))cooldown.set(host,until)}if(r.status>=400&&r.status<500&&![408,429].includes(r.status)&&r.status!==405)disabled.add(host);throw Error(`HTTP ${r.status}`)}
+    const data=await r.json();if(!Array.isArray(data.elements)||data.remark)throw Error(data.remark||'OSM geometry missing');
+    const elements=data.elements.filter(x=>x.type==='way'),ways=elements.map(x=>({geometry:x.geometry,kind:x.tags?.highway?'road':'river'}));
+    // Reject incomplete responses instead of silently caching missing barriers.
+    if(!validOSMWays(ways))throw Error('OSM response contains incomplete way geometry');
+    await osmCache('put',key,{savedAt:Date.now(),ways});
+    try{localStorage.setItem('wf_osm_host',host)}catch(e){}
+    return ways;
+   }catch(e){error=e;note('WARN','OSM barrier source: '+host+' '+(e.name==='AbortError'?'60 s request timeout':e.message))}finally{clearTimeout(timer)}
+  }
+ }
+ throw Error('Road/river geometry could not be loaded: '+error?.message+'. Upload road/river lines GeoJSON under Area of interest, then press Prepare Data again.');
+}
+async function loadLinearBarriers(){const b=G,box=[b.s,b.w,b.n,b.e].join(','),ways=USER_LINES||await fetchOSMBarriers(box);
+ if(USER_LINES)prepStage('barriers','active','Using uploaded road/river geometry',.8);
  const canvas=document.createElement('canvas');canvas.width=b.nx;canvas.height=b.ny;const c=canvas.getContext('2d',{willReadFrequently:true});if(!c)throw Error('Canvas unavailable for road/river barriers.');c.strokeStyle='#fff';c.lineWidth=1.45;c.lineCap='square';c.lineJoin='round';let roads=0,rivers=0;
  for(const way of ways){if(way.kind==='road')roads++;else rivers++;c.beginPath();for(let k=0;k<way.geometry.length;k++){const g=way.geometry[k],x=(g.lon-b.w)/b.dx,y=(b.n-g.lat)/b.dy;if(k)c.lineTo(x,y);else c.moveTo(x,y)}c.stroke()}
  const pixels=c.getImageData(0,0,b.nx,b.ny).data;let cells=0;for(let i=0;i<b.N;i++)if(b.inside[i]&&pixels[i*4+3]){b.lineBarrier[i]=1;cells++}canvas.width=0;note('OK',`${USER_LINES?'Uploaded':'OSM'} barriers: ${roads} roads, ${rivers} waterways, ${cells} blocked cells; surface fire cannot cross mapped lines.`);return{roads,rivers,cells}}
