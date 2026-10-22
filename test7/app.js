@@ -95,16 +95,14 @@ const P=()=>({mode:MODE,sensor:$('sensor').value,dem:$('dem').value,cell:Math.ma
 const startMs=p=>{if(p.start)return p.start;if(p.mode==='hind')return Date.parse($('hs').value+'T'+String(clamp(+$('hh').value||0,0,23)).padStart(2,'0')+':00:00Z');const n=new Date();n.setUTCMinutes(0,0,0);return+n};
 
 /* ================= cache (IndexedDB, this browser only) ================= */
-const DB=new Promise(r=>{const q=indexedDB.open('wf',1);q.onupgradeneeded=()=>q.result.createObjectStore('c');q.onsuccess=()=>r(q.result)});
-const idb=async(m,k,v)=>{if(m==='clear')PREP_CACHE.clear();if(prepActive&&m==='get'&&PREP_CACHE.has(k))return PREP_CACHE.get(k);if(prepActive&&m==='put')PREP_CACHE.set(k,v);const d=await DB;return new Promise(r=>{const s=d.transaction('c',m==='get'?'readonly':'readwrite').objectStore('c');
- const q=m==='get'?s.get(k):m==='put'?s.put(v,k):s.clear();q.onsuccess=()=>r(q.result);q.onerror=()=>r(undefined)})};
-$('clear').onclick=async()=>{await idb('clear');log('Cache cleared.')};
+DataIO.warn=m=>note('WARN',m);
+const idb=(m,k,v)=>DataIO.cache(m,k,v);
+$('clear').onclick=async()=>{await idb('clear');PREP_CACHE.clear();WX_CACHE.clear();log('Cache cleared.')};
 
 /* ================= network helper with clear error messages ================= */
-async function getJ(url,label,tries=3,timeoutMs=0){for(let a=0;;a++){let r,timer;const controller=timeoutMs?new AbortController():null;
- try{if(controller)timer=setTimeout(()=>controller.abort(),timeoutMs);r=await fetch(url,controller?{signal:controller.signal}:undefined)}catch(e){if(a<tries-1){note('WARN',`${label}: request ${a+1}/${tries} failed (${controller?.signal.aborted?'timeout':e.message}); retrying.`);await sleep(1500*(a+1));continue}throw Error(`${label}: ${controller?.signal.aborted?`request timed out after ${Math.round(timeoutMs/1000)}s`:'network error (Failed to fetch)'}. Check internet or try Prepare again; completed data stays cached.`)}finally{clearTimeout(timer)}
- if((r.status===429||r.status>=500)&&a<tries-1){note('WARN',`${label}: HTTP ${r.status}; retrying ${a+1}/${tries}.`);await sleep(2000*(a+1));continue}
- if(!r.ok)throw Error(label+': HTTP '+r.status+' '+(await r.text()).slice(0,120));return r.json()}}
+async function getJ(url,label,tries=3,timeoutMs=30000,signal=DataIO.signal){let last;for(let a=0;a<tries;a++){
+ try{return await DataIO.request(url,{},'json',timeoutMs||30000,signal)}catch(e){DataIO.check(signal);last=e;if(e.status&&e.status<500&&![408,429].includes(e.status))break;if(a<tries-1){note('WARN',`${label}: ${e.message}; retry ${a+1}/${tries-1}`);await DataIO.delay(1500*(a+1),signal)}}}
+ throw Error(`${label}: ${last.message}. Completed data remains cached; use ↻ Retry.`)}
 
 /* ================= Earth Engine sign-in (token kept in this browser) ================= */
 const TOKKEY='wf_tok';
@@ -235,12 +233,26 @@ async function eeTile(img,x0,y0,tw,th,grid=G){
  for(const k in o){out[k]=Int16Array.from(o[k].flat());if(out[k].length!==tw*th)throw Error(`Earth Engine tile size mismatch (${out[k].length} vs ${tw*th})`)}return out}
 const EE_REQUIRED=['nw','nd','nm','sm','wi','lst','recent','bsi','z','lc','wcWater'];
 function validEETile(o,n,bi){return !!o&&[...EE_REQUIRED,...(bi?['bx']:[])].every(k=>o[k]&&o[k].length===n)}
-async function prepareEETile(img,t,base,bi,depth=0){const key=base+JSON.stringify([t.x0,t.y0,t.tw,t.th]);let o=await idb('get',key);if(validEETile(o,t.tw*t.th,bi))return{data:o,cached:true};
- if(o)note('WARN',`Earth Engine cached tile ${t.x0},${t.y0} is incomplete; fetching again.`);
- const split=await idb('get',key+':split');let last;for(let attempt=1;!split&&attempt<=3;attempt++){let timer;try{const call=eeTile(img,t.x0,t.y0,t.tw,t.th);o=await Promise.race([call,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('tile request timed out after 50 s')),50000)})]);if(!validEETile(o,t.tw*t.th,bi))throw Error('Earth Engine tile missing required raster bands');await idb('put',key,o);return{data:o,cached:false}}
- catch(e){last=e;const msg=String(e.message||e);if(/auth|permission|project|credential|not signed|access denied/i.test(msg))break;note('WARN',`Earth Engine tile ${t.x0},${t.y0}: attempt ${attempt}/3 failed: ${msg}`);prepStage('satellite','active',`Tile ${t.x0},${t.y0}: retry ${attempt}/3 · ${msg.slice(0,80)}`,prepStates.satellite?.fraction||0);if(attempt<3)await sleep(1100*attempt)}finally{clearTimeout(timer)}}
- if(depth<2&&t.tw>64&&t.th>64&&!/auth|permission|project|credential|not signed|access denied/i.test(String(last?.message))){note('WARN',`Earth Engine tile ${t.x0},${t.y0}: splitting after repeated failure.`);const w=Math.floor(t.tw/2),h=Math.floor(t.th/2),parts=[{x0:t.x0,y0:t.y0,tw:w,th:h},{x0:t.x0+w,y0:t.y0,tw:t.tw-w,th:h},{x0:t.x0,y0:t.y0+h,tw:w,th:t.th-h},{x0:t.x0+w,y0:t.y0+h,tw:t.tw-w,th:t.th-h}],pieces=[];await idb('put',key+':split',true);for(const part of parts)pieces.push((await prepareEETile(img,part,base,bi,depth+1)).data);const out={};for(const band of Object.keys(pieces[0])){out[band]=new Int16Array(t.tw*t.th);for(let a=0;a<4;a++){const part=parts[a],src=pieces[a][band];if(!src)continue;for(let y=0;y<part.th;y++)out[band].set(src.subarray(y*part.tw,(y+1)*part.tw),(part.y0-t.y0+y)*t.tw+part.x0-t.x0)}}if(!validEETile(out,t.tw*t.th,bi))throw Error('Earth Engine split tiles were incomplete.');await idb('put',key,out);return{data:out,cached:false}}
- throw Error(`Earth Engine tile ${t.x0},${t.y0} failed: ${last?.message||last}. Completed tiles remain cached; use Retry failed data only.`)}
+async function prepareEETile(img,t,base,bi,depth=0,signal=DataIO.signal,grid=G){
+ DataIO.check(signal);const key=base+JSON.stringify([t.x0,t.y0,t.tw,t.th]);let o=await idb('get',key);DataIO.check(signal);if(validEETile(o,t.tw*t.th,bi))return{data:o,cached:true};
+ const split=await idb('get',key+':split'),canSplit=depth<2&&(t.tw>64||t.th>64);let last;
+ for(let attempt=1;!split&&attempt<=2;attempt++){
+  try{DataIO.check(signal);const image=typeof img==='function'?await img():img;DataIO.check(signal);
+   const call=DataIO.once(key,async()=>{const data=await eeTile(image,t.x0,t.y0,t.tw,t.th,grid);if(!validEETile(data,t.tw*t.th,bi))throw Error('Earth Engine tile missing required raster bands');await idb('put',key,data);return data});
+   o=await DataIO.wait(call,signal,canSplit?45000:90000);return{data:o,cached:false}
+  }catch(e){DataIO.check(signal);last=e;if(/auth|permission|project|credential|not signed|sign in|access denied/i.test(e.message))break;
+   note('WARN',`Earth Engine tile ${t.x0},${t.y0}: ${e.message}`);prepStage('satellite','active',`Tile ${t.x0},${t.y0}: retrying missing data`,prepStates.satellite?.fraction||0);
+   if(canSplit)break;if(attempt<2)await DataIO.delay(1500*attempt,signal)}
+ }
+ if(canSplit&&!/auth|permission|project|credential|not signed|sign in|access denied/i.test(last?.message||'')){
+  const widths=t.tw>64?[Math.floor(t.tw/2),t.tw-Math.floor(t.tw/2)]:[t.tw],heights=t.th>64?[Math.floor(t.th/2),t.th-Math.floor(t.th/2)]:[t.th],parts=[],pieces=[];let y=t.y0;
+  for(const th of heights){let x=t.x0;for(const tw of widths){parts.push({x0:x,y0:y,tw,th});x+=tw}y+=th}
+  await idb('put',key+':split',true);for(const part of parts)pieces.push((await prepareEETile(img,part,base,bi,depth+1,signal,grid)).data);
+  const out={};for(const band of Object.keys(pieces[0])){out[band]=new Int16Array(t.tw*t.th);for(let a=0;a<parts.length;a++){const part=parts[a],src=pieces[a][band];for(let y=0;y<part.th;y++)out[band].set(src.subarray(y*part.tw,(y+1)*part.tw),(part.y0-t.y0+y)*t.tw+part.x0-t.x0)}}
+  if(!validEETile(out,t.tw*t.th,bi))throw Error('Earth Engine split tiles were incomplete.');await idb('put',key,out);DataIO.check(signal);return{data:out,cached:false}
+ }
+ throw Error(`Earth Engine tile ${t.x0},${t.y0} failed: ${last?.message||'request failed'}. Completed tiles remain cached; use ↻ Retry.`)
+}
 function baseOf(nw,nd,nm,sm,p){const fn=nw!==MISSING&&nd!==MISSING?clamp((nw-nd)/5000,0,1):0,mv=nm!==MISSING?clamp((nm/1e4+.2)/.6,0,1):.5,ms=sm!==MISSING?clamp(sm/1e4/.4,0,1):.5;
  const fuel=1+p.wCure*((.25+.75*fn)-1),moist=Math.max(.03,1-.8*(.7*mv*p.wNdmi+.3*ms*p.wSoil));return clamp(fuel*moist,0,1)}
 const hasFuel=(nw,nd,threshold)=>nw!==MISSING&&nd!==MISSING&&(nw-nd)/1e4>=threshold;
@@ -259,24 +271,23 @@ $('previewcure').onclick=async()=>{const button=$('previewcure'),seq=++previewSe
 $('curethr').oninput=()=>{$('curevalue').textContent=(+$('curethr').value).toFixed(2);if(G){const g={w:G.w,n:G.n,e:G.e,s:G.s,nx:G.nx,ny:G.ny,N:G.N,inside:G.inside,nw:G.nw,nd:G.nd};dropGrid();attachPreview(g);log('Threshold changed. Preview updated; press Prepare again before running.')}else if(PREVIEW)renderPreview()};
 for(const id of ['ww0','ww1','dw0','dw1'])$(id).addEventListener('change',()=>{clearPreview();dropGrid()});
 for(const id of ['lst0','lst1'])$(id).addEventListener('change',dropGrid);
-async function loadEE(p){const{nx,ny,N}=G;
+async function loadEE(p){const signal=DataIO.signal,grid=G,{nx,ny,N}=grid;
  if($('noee').checked){for(let i=0;i<N;i++){G.z[i]=0;G.lc[i]=30;G.nw[i]=8000;G.nd[i]=2000;G.nm[i]=2000;G.sm[i]=2000;G.base[i]=Math.round(baseOf(8000,2000,2000,2000,p)*255);G.fuelMask[i]=hasFuel(8000,2000,p.cureThr)?1:0}G.variation=makeVariation(N);G.gaps='Satellite layers skipped for testing. Recent NDVI, BSI and LST unavailable.';return}
  const fireStart=isoD(startMs(p));if((p.lst0&&p.lst1&&p.lst0>p.lst1)||(p.lst1&&p.lst1>=fireStart))throw Error('LST date range must end before the fire start date.');
- await ensureEE();if(!eeReady)throw Error('Sign in to Earth Engine first (tap Sign in with Google), or tick "Skip Earth Engine".');
- const img=eeImage(p,ee.Geometry.Rectangle([G.w,G.s,G.e,G.n],'EPSG:4326',false)),tiles=[];
+ let imagePromise;const img=()=>imagePromise||(imagePromise=(async()=>{await ensureEE();DataIO.check(signal);if(!eeReady)throw Error('Sign in to Earth Engine to fetch missing tiles. Completed tiles are cached.');return eeImage(p,ee.Geometry.Rectangle([grid.w,grid.s,grid.e,grid.n],'EPSG:4326',false))})());const tiles=[];
  for(let y0=0;y0<ny;y0+=TS)for(let x0=0;x0<nx;x0+=TS){const tw=Math.min(TS,nx-x0),th=Math.min(TS,ny-y0);let any=false;
   for(let y=y0;y<y0+th&&!any;y++)for(let x=x0;x<x0+tw;x++)if(G.inside[y*nx+x]){any=true;break}
   if(any)tiles.push({x0,y0,tw,th})}
  const d0=isoD(startMs(p)),miss={nw:0,nd:0,nm:0,wi:0,sm:0,bx:0,z:0,lst:0,recent:0,bsi:0},cnt={done:0,hit:0};let err=null,tot=0;
- const kb=JSON.stringify(['ee8',p.sensor,p.dem,p.cell,G.w,G.n,G.dx,G.dy,G.nx,G.ny,AOI,p.ww0,p.ww1,p.dw0,p.dw1,p.nm0,p.nm1,p.wi0,p.wi1,p.lst0,p.lst1,d0,p.bi?[p.bx,p.pre,p.post,p.hours,p.eventEnd,EVENTS.map(e=>[e.start,e.end])]:0]);
- const work=async t=>{if(err)return;try{const result=await prepareEETile(img,t,kb,p.bi),o=result.data;if(result.cached)cnt.hit++;
+ const kb=JSON.stringify(['ee8',p.sensor,p.dem,p.cell,G.w,G.n,G.dx,G.dy,G.nx,G.ny,AOI,p.ww0,p.ww1,p.dw0,p.dw1,p.nm0,p.nm1,p.wi0,p.wi1,p.lst0,p.lst1,d0,p.bi?[p.bx,p.pre,p.post,p.hours,p.eventEnd,EVENTS.map(e=>[e.start,e.end])]:0, ...(!p.eventEnd&&!EVENTS.length&&p.bi?[isoD(startMs(p)+p.hours*36e5)]:[])]);
+ const work=async t=>{if(err)return;try{const result=await prepareEETile(img,t,kb,p.bi,0,signal,grid),o=result.data;DataIO.check(signal);if(result.cached)cnt.hit++;
   for(let ty=0;ty<t.th;ty++)for(let tx=0;tx<t.tw;tx++){const q=ty*t.tw+tx,i=(t.y0+ty)*nx+t.x0+tx;if(!G.inside[i])continue;tot++;
    const nw=o.nw[q],nd=o.nd[q],nm=o.nm[q],sm=o.sm[q];if(nw===MISSING)miss.nw++;if(nd===MISSING)miss.nd++;if(nm===MISSING)miss.nm++;if(sm===MISSING)miss.sm++;if(o.wi[q]===MISSING)miss.wi++;if(o.lst[q]===MISSING)miss.lst++;if(o.recent[q]===MISSING)miss.recent++;if(o.bsi[q]===MISSING)miss.bsi++;G.nw[i]=nw;G.nd[i]=nd;G.nm[i]=nm;G.sm[i]=sm;G.wi[i]=o.wi[q];G.lst[i]=o.lst[q];G.recent[i]=o.recent[q];G.bsi[i]=o.bsi[q];
    G.demMissing[i]=o.z[q]===MISSING?1:0;G.z[i]=o.z[q]===MISSING?0:o.z[q];if(G.demMissing[i])miss.z++;G.lc[i]=o.lc[q]===MISSING?30:o.lc[q];
    G.base[i]=Math.round(baseOf(nw,nd,nm,sm,p)*255);G.fuelMask[i]=hasFuel(nw,nd,p.cureThr)?1:0;G.water[i]=(o.wcWater[q]===1||o.wi[q]!==MISSING&&o.wi[q]>0)?1:0;
    if(o.bx){G.bx[i]=o.bx[q];if(o.bx[q]===MISSING)miss.bx++;else G.hasBI=true}}
   cnt.done++;log(`Earth Engine tiles ${cnt.done}/${tiles.length} (${cnt.hit} from cache)…`);prepStage('satellite','active',`${cnt.done}/${tiles.length} tiles · ${cnt.hit} cached`,cnt.done/tiles.length)}catch(e){err=e}};
- let k=0;await Promise.all(Array.from({length:2},async()=>{while(k<tiles.length&&!err)await work(tiles[k++])}));if(err)throw Error(`${cnt.done}/${tiles.length} tiles complete and retained; ${tiles.length-cnt.done} failed or pending. ${err.message}`);
+ let k=0;await Promise.all(Array.from({length:2},async()=>{while(k<tiles.length&&!err)await work(tiles[k++])}));DataIO.check(signal);if(err)throw Error(`${cnt.done}/${tiles.length} tiles complete and retained; ${tiles.length-cnt.done} failed or pending. ${err.message}`);
  const pc=v=>Math.round(100*v/Math.max(1,tot));
  note('OK',`Earth Engine: ${tiles.length} tiles of ${TS}×${TS} cells (${cnt.hit} from cache), ${tot} cells inside the area.`);
  G.variation=makeVariation(N);G.gaps=`Data gaps (% of cells): green NDVI ${pc(miss.nw)}, dry NDVI ${pc(miss.nd)}, recent NDVI ${pc(miss.recent)}, BSI ${pc(miss.bsi)}, NDMI ${pc(miss.nm)}, NDWI ${pc(miss.wi)}, DEM ${pc(miss.z)}, LST ${pc(miss.lst)}, soil ${pc(miss.sm)}${p.bi?', burn index '+pc(miss.bx):''}.`;note(miss.nw||miss.nd||miss.recent||miss.bsi||miss.lst||miss.z?'WARN':'OK',G.gaps);
@@ -288,42 +299,40 @@ async function loadEE(p){const{nx,ny,N}=G;
 function makeVariation(N){const out=new Float32Array(N);let x=0x72ae391d;for(let i=0;i<N;i++){x^=x<<13;x^=x>>>17;x^=x<<5;out[i]=.95+(x>>>0)/4294967296*.1}return out}
 function applyBareRules(){const values=[];for(let i=0;i<G.N;i++)if(G.inside[i]&&!NF[G.lc[i]]&&G.bsi[i]!==MISSING)values.push(G.bsi[i]);if(values.length<20){note('WARN','BSI has fewer than 20 usable cells; bare-soil percentile rule inactive.');return}values.sort((a,b)=>a-b);const q80=values[Math.floor((values.length-1)*.8)],q95=values[Math.floor((values.length-1)*.95)];if(q95<=q80){note('WARN','BSI has no upper-tail variation; bare-soil percentile rule inactive.');return}let slow=0,blocked=0;for(let i=0;i<G.N;i++)if(G.inside[i]&&G.bsi[i]!==MISSING){const t=clamp((G.bsi[i]-q80)/(q95-q80),0,1);G.bareFactor[i]=1-.65*t;if(t>0)slow++;if(G.bsi[i]>=q95&&G.recent[i]>5500){G.hardBare[i]=1;blocked++}}note('OK',`BSI thresholds: 80th ${(q80/1e4).toFixed(3)}, 95th ${(q95/1e4).toFixed(3)}; ${slow} slowed, ${blocked} blocked with recent NDVI > 0.55.`)}
 /* OpenStreetMap line geometry is used as a surface-fire barrier, not the basemap tiles. */
-// Cache failures must not turn a successful network response into a preparation failure.
-async function osmCache(method,key,value){let timer;try{return await Promise.race([idb(method,key,value),new Promise(resolve=>{timer=setTimeout(resolve,1500)})])}catch(e){note('WARN','OSM cache unavailable: '+e.message)}finally{clearTimeout(timer)}}
 function validOSMWays(ways){return Array.isArray(ways)&&ways.every(w=>(w.kind==='road'||w.kind==='river')&&Array.isArray(w.geometry)&&w.geometry.length>1&&w.geometry.every(p=>p&&Number.isFinite(p.lat)&&Number.isFinite(p.lon)&&Math.abs(p.lat)<=90&&Math.abs(p.lon)<=180))}
 async function fetchOSMBarriers(box){
- const key='osm-barriers-8:'+box,cached=await osmCache('get',key),ttl=7*86400000;
- if(cached&&Number.isFinite(cached.savedAt)&&Date.now()-cached.savedAt>=0&&Date.now()-cached.savedAt<ttl&&validOSMWays(cached.ways)){prepStage('barriers','active','Using cached road/river geometry',.8);return cached.ways}
- // Preserve the existing feature selection and full way coordinates.
- const query=`[out:json][timeout:25];(way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|track)$"](${box});way["waterway"~"^(river|stream|canal)$"]["intermittent"!="yes"](${box}););out geom qt;`;
+ const signal=DataIO.signal,key='osm-barriers-8:'+box,cached=await idb('get',key),ttl=7*86400000;
+ DataIO.check(signal);const fresh=c=>c&&Date.now()-c.savedAt>=0&&Date.now()-c.savedAt<ttl&&validOSMWays(c.ways);
+ if(fresh(cached)){prepStage('barriers','active','Using cached road/river geometry',.8);return cached.ways}
+ const [south,west,north,east]=box.split(',').map(Number),ny=Math.max(1,Math.ceil((north-south)/.12)),nx=Math.max(1,Math.ceil((east-west)/.12)),jobs=[];
+ // Small, independently cached requests avoid one large timeout discarding both datasets.
+ for(let y=0;y<ny;y++)for(let x=0;x<nx;x++)for(const kind of ['road','river'])jobs.push({kind,box:[south+(north-south)*y/ny,west+(east-west)*x/nx,south+(north-south)*(y+1)/ny,west+(east-west)*(x+1)/nx].join(',')});
  const hosts=['https://overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter','https://overpass.osm.jp/api/interpreter'];
  try{const preferred=localStorage.getItem('wf_osm_host');if(hosts.includes(preferred)){hosts.splice(hosts.indexOf(preferred),1);hosts.unshift(preferred)}}catch(e){}
- let error;const cooldown=new Map(),disabled=new Set();
- // One bounded retry round, rotating hosts first. POST avoids URL limits; GET
- // on retry also handles servers/proxies that reject POST. Both are CORS-simple.
- for(let round=0;round<2;round++){
-  if(round)await new Promise(resolve=>setTimeout(resolve,2000+Math.random()*1000));
-  for(const [n,host] of hosts.entries()){
-   if(disabled.has(host)||Date.now()<(cooldown.get(host)||0))continue;
-   prepStage('barriers','active',`Online geometry source ${n+1}/${hosts.length} · attempt ${round+1}/2…`,(round*hosts.length+n)/(2*hosts.length));
-   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),60000);
-   try{
-    const body=new URLSearchParams({data:query}),r=await fetch(round?host+'?'+body:host,round?{signal:controller.signal}:{method:'POST',body,signal:controller.signal});
-    if(!r.ok){const retryAfter=r.headers.get('Retry-After');if(retryAfter){const seconds=Number(retryAfter),until=Number.isFinite(seconds)?Date.now()+seconds*1000:Date.parse(retryAfter);if(Number.isFinite(until))cooldown.set(host,until)}if(r.status>=400&&r.status<500&&![408,429].includes(r.status)&&r.status!==405)disabled.add(host);throw Error(`HTTP ${r.status}`)}
-    const data=await r.json();if(!Array.isArray(data.elements)||data.remark)throw Error(data.remark||'OSM geometry missing');
-    const elements=data.elements.filter(x=>x.type==='way'),ways=elements.map(x=>({geometry:x.geometry,kind:x.tags?.highway?'road':'river'}));
-    // Reject incomplete responses instead of silently caching missing barriers.
-    if(!validOSMWays(ways))throw Error('OSM response contains incomplete way geometry');
-    await osmCache('put',key,{savedAt:Date.now(),ways});
-    try{localStorage.setItem('wf_osm_host',host)}catch(e){}
-    return ways;
-   }catch(e){error=e;note('WARN','OSM barrier source: '+host+' '+(e.name==='AbortError'?'60 s request timeout':e.message))}finally{clearTimeout(timer)}
+ const ways=new Map(),cooldown=new Map();let complete=0;
+ for(const job of jobs){
+  DataIO.check(signal);const chunkKey='osm-chunk-1:'+job.kind+':'+job.box,saved=await idb('get',chunkKey);DataIO.check(signal);let lines=fresh(saved)?saved.ways:null,last;
+  if(!lines){const filter=job.kind==='road'?'["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|track)$"]':'["waterway"~"^(river|stream|canal)$"]["intermittent"!="yes"]',query=`[out:json][timeout:20];way${filter}(${job.box});out geom qt;`;
+   for(let round=0;round<2&&!lines;round++){
+    for(const host of hosts){DataIO.check(signal);if(Date.now()<(cooldown.get(host)||0))continue;
+     prepStage('barriers','active',`${complete}/${jobs.length} geometry chunks complete · ${job.kind} source ${hosts.indexOf(host)+1}/${hosts.length}`,complete/jobs.length);
+     try{const body=new URLSearchParams({data:query}),data=await DataIO.request(round?host:host+'?'+body,round?{method:'POST',body}:{},'json',30000,signal);
+      if(!Array.isArray(data.elements)||data.remark)throw Error(data.remark||'OSM geometry missing');
+      const result=data.elements.filter(x=>x.type==='way').map(x=>({id:x.id,geometry:x.geometry,kind:job.kind}));if(!validOSMWays(result))throw Error('Incomplete OSM way geometry');
+      await idb('put',chunkKey,{savedAt:Date.now(),ways:result});DataIO.check(signal);lines=result;try{localStorage.setItem('wf_osm_host',host)}catch(e){}break;
+     }catch(e){DataIO.check(signal);last=e;if(e.retryAfter){const seconds=Number(e.retryAfter),until=Number.isFinite(seconds)?Date.now()+seconds*1000:Date.parse(e.retryAfter);if(Number.isFinite(until))cooldown.set(host,until)}note('WARN',`OSM ${job.kind}: ${host}: ${e.message}`)}
+    }
+    if(!lines&&round===0)await DataIO.delay(2000,signal);
+   }
+   if(!lines)throw Error(`${job.kind==='road'?'Road':'River'} geometry failed (${complete}/${jobs.length} chunks retained): ${last?.message||'servers cooling down'}. Use ↻ Retry or upload road/river GeoJSON.`);
   }
+  for(const way of lines)ways.set(way.kind+':'+(way.id??JSON.stringify(way.geometry)),way);complete++;
+  prepStage('barriers','active',`${complete}/${jobs.length} geometry chunks complete${saved?' · cached':''}`,complete/jobs.length);
  }
- throw Error('Road/river geometry could not be loaded: '+error?.message+'. Upload road/river lines GeoJSON under Area of interest, then press Prepare Data again.');
+ const result=[...ways.values()];await idb('put',key,{savedAt:Date.now(),ways:result});DataIO.check(signal);return result;
 }
-async function loadLinearBarriers(){const b=G,box=[b.s,b.w,b.n,b.e].join(','),ways=USER_LINES||await fetchOSMBarriers(box);
- if(USER_LINES)prepStage('barriers','active','Using uploaded road/river geometry',.8);
+async function loadLinearBarriers(){const signal=DataIO.signal,b=G,box=[b.s,b.w,b.n,b.e].join(','),ways=USER_LINES||await fetchOSMBarriers(box);
+ DataIO.check(signal);if(USER_LINES)prepStage('barriers','active','Using uploaded road/river geometry',.8);
  const canvas=document.createElement('canvas');canvas.width=b.nx;canvas.height=b.ny;const c=canvas.getContext('2d',{willReadFrequently:true});if(!c)throw Error('Canvas unavailable for road/river barriers.');c.strokeStyle='#fff';c.lineWidth=1.45;c.lineCap='square';c.lineJoin='round';let roads=0,rivers=0;
  for(const way of ways){if(way.kind==='road')roads++;else rivers++;c.beginPath();for(let k=0;k<way.geometry.length;k++){const g=way.geometry[k],x=(g.lon-b.w)/b.dx,y=(b.n-g.lat)/b.dy;if(k)c.lineTo(x,y);else c.moveTo(x,y)}c.stroke()}
  const pixels=c.getImageData(0,0,b.nx,b.ny).data;let cells=0;for(let i=0;i<b.N;i++)if(b.inside[i]&&pixels[i*4+3]){b.lineBarrier[i]=1;cells++}canvas.width=0;note('OK',`${USER_LINES?'Uploaded':'OSM'} barriers: ${roads} roads, ${rivers} waterways, ${cells} blocked cells; surface fire cannot cross mapped lines.`);return{roads,rivers,cells}}
@@ -365,20 +374,20 @@ function applyFieldWeather(raw){if(!FIELD.weather.length)return raw;const rows=f
 function speciesNames(){return[...new Set($('species').value.split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean))].slice(0,15)}
 function evidenceClass(text,name){const escaped=name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),nameRe=new RegExp('\\b'+escaped+'\\b','i'),sentences=text.replace(/<[^>]*>/g,' ').split(/[.!?;]\s+/),found=new Set();for(const part of sentences){if(!nameRe.test(part))continue;const lower=part.toLowerCase();if(/(?:non[- ]?flammable|low(?:est)? flammability|low(?:est)? (?:fire )?ignitability|less flammable|least flammable)/.test(lower))found.add('low');if(/(?:high(?:est|ly)? flammab|high(?:est|ly)? (?:fire )?ignitability|more flammable|most flammable)/.test(lower))found.add('high');if(/(?:moderate flammability|medium flammability|intermediate flammability)/.test(lower))found.add('medium')}
  return found.size===1?[...found][0]:null}
-async function lookupSpecies(name){const query='"'+name.replace(/[^\p{L} .-]/gu,'').slice(0,90)+'" AND (flammability OR flammable OR ignitability)';const url='https://www.ebi.ac.uk/europepmc/webservices/rest/search?format=json&resultType=core&pageSize=25&query='+encodeURIComponent(query),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);let res;try{res=await fetch(url,{signal:controller.signal})}finally{clearTimeout(timer)}if(!res.ok)throw Error('Europe PMC HTTP '+res.status);const papers=(await res.json()).resultList?.result||[],classes=[];
+async function lookupSpecies(name){const query='"'+name.replace(/[^\p{L} .-]/gu,'').slice(0,90)+'" AND (flammability OR flammable OR ignitability)';const url='https://www.ebi.ac.uk/europepmc/webservices/rest/search?format=json&resultType=core&pageSize=25&query='+encodeURIComponent(query);let response=await idb('get',url);if(!response){response=await getJ(url,'Europe PMC',2,20000);await idb('put',url,response)};const papers=response.resultList?.result||[],classes=[];
  for(const paper of papers){if(!paper.doi||paper.pubTypeList?.pubType?.some(x=>/review|preprint/i.test(x)))continue;const cls=evidenceClass((paper.title||'')+'. '+(paper.abstractText||''),name);if(cls)classes.push({cls,title:paper.title,doi:paper.doi,url:'https://doi.org/'+encodeURIComponent(paper.doi)})}
  const labels=new Set(classes.map(x=>x.cls));return{name,cls:labels.size===1?classes[0].cls:null,source:labels.size===1?classes[0]:null,reason:labels.size>1?'conflicting studies':'no explicit class found in matched research'}}
 function renderSpecies(){const host=$('speciesstatus');host.replaceChildren();if(!FIELD.species.length){host.textContent=bilingual('No species classification loaded.','कोई प्रजाति वर्ग लोड नहीं।');return}for(const r of FIELD.species){const div=document.createElement('div');div.textContent=`${r.name}: ${r.cls? r.cls.toUpperCase() : 'unresolved ('+r.reason+')'}`;if(r.source){const a=document.createElement('a');a.href=r.source.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent=' · '+r.source.title;div.append(a)}host.append(div)}const valid=FIELD.species.filter(x=>x.cls);if(valid.length){const cls=representativeSpecies();host.append(document.createTextNode(bilingual(`Representative: ${cls} (${valid.length} resolved).`,`प्रतिनिधि वर्ग: ${cls} (${valid.length} प्रमाणित)।`)))}}
 function representativeSpecies(){const codes={low:1,medium:2,high:3},valid=FIELD.species.filter(x=>x.cls).map(x=>codes[x.cls]);if(!valid.length)return null;const m=Math.round(valid.reduce((a,b)=>a+b,0)/valid.length);return['','low','medium','high'][m]}
 $('species').oninput=()=>{FIELD.species=[];FIELD.lookupSignature='';renderSpecies()};
-async function ensureSpeciesLookups(){const names=speciesNames(),button=$('lookupspecies');if(FIELD.lookupSignature===names.join('|'))return;if(!names.length){FIELD.species=[];FIELD.lookupSignature='';renderSpecies();return}button.disabled=true;FIELD.species=[];$('speciesstatus').textContent=bilingual('Searching published research…','प्रकाशित शोध खोज रहे हैं…');try{for(const name of names){try{FIELD.species.push(await lookupSpecies(name))}catch(e){FIELD.species.push({name,cls:null,reason:'lookup failed: '+e.message})}renderSpecies();if(prepActive)prepStage('field','active',`Species ${FIELD.species.length}/${names.length}`,FIELD.species.length/names.length)}FIELD.lookupSignature=names.join('|')}finally{button.disabled=false}}
+async function ensureSpeciesLookups(){const signal=DataIO.signal;const names=speciesNames(),button=$('lookupspecies');if(FIELD.lookupSignature===names.join('|'))return;if(!names.length){FIELD.species=[];FIELD.lookupSignature='';renderSpecies();return}button.disabled=true;FIELD.species=[];$('speciesstatus').textContent=bilingual('Searching published research…','प्रकाशित शोध खोज रहे हैं…');try{for(const name of names){try{const result=await DataIO.wait(lookupSpecies(name),signal);DataIO.check(signal);FIELD.species.push(result)}catch(e){DataIO.check(signal);FIELD.species.push({name,cls:null,reason:'lookup failed: '+e.message})}renderSpecies();if(prepActive)prepStage('field','active',`Species ${FIELD.species.length}/${names.length}`,FIELD.species.length/names.length)}FIELD.lookupSignature=names.join('|')}finally{button.disabled=false}}
 $('lookupspecies').onclick=()=>ensureSpeciesLookups();
 function applyFieldLayers(){const names=speciesNames();if(FIELD.lookupSignature!==names.join('|')){FIELD.species=[];renderSpecies()}const species=representativeSpecies(),foliage=$('litter').checked?$('litterclass').value:null,code={low:1,medium:2,high:3},factor={low:.85,medium:1,high:1.15};G.speciesClass=species;G.foliageClass=foliage;G.speciesRaster=species?new Uint8Array(G.N):null;G.foliageRaster=foliage?new Uint8Array(G.N):null;G.fieldFuelFactor=(factor[species]||1)*(factor[foliage]||1);for(let i=0;i<G.N;i++)if(G.inside[i]){if(species)G.speciesRaster[i]=code[species];if(foliage)G.foliageRaster[i]=code[foliage]}if(species||foliage)note('OK',`Optional fuel observations: species ${species||'none'}, foliage ${foliage||'none'}; existing spread multiplied by ${G.fieldFuelFactor.toFixed(3)} on burnable cells.`)}
 function clearFieldInputs(){FIELD.weather=[];FIELD.species=[];FIELD.lookupSignature='';$('weatherfile').value='';for(const id of ['fieldlat','fieldlon','fielddate','fieldtime','fieldtemp','fieldwind','fielddir','fieldrh','fieldrain'])$(id).value='';$('weathermethod').value='bias';$('species').value='';$('litter').checked=false;$('litterclass').value='high';weatherSummary();renderSpecies()}
 renderSpecies();
 
 /* ================= Open-Meteo lattice ================= */
-const WX_CACHE=new Map();async function loadMet(p){const cacheKey=JSON.stringify([G.w,G.n,G.nx,G.ny,p.start||startMs(p),p.hours,p.met0,p.met1,p.spc,p.mode]);if(WX_CACHE.has(cacheKey)){G.M=applyFieldWeather(WX_CACHE.get(cacheKey));W=null;prepStage('weather','active','Weather lattice reused from memory cache',1);return}
+const WX_CACHE=new Map();async function loadMet(p){const signal=DataIO.signal;const cacheKey=JSON.stringify([G.w,G.n,G.dx,G.dy,G.nx,G.ny,p.start||startMs(p),p.hours,p.met0,p.met1,p.spc,p.mode]);if(WX_CACHE.has(cacheKey)){G.M=applyFieldWeather(WX_CACHE.get(cacheKey));W=null;prepStage('weather','active','Weather lattice reused from memory cache',1);return}
 const km=(G.e-G.w)*111.32*Math.cos((G.n+G.s)/2*Math.PI/180),kh=(G.n-G.s)*111.32;let sp=p.spc,nlx,nly;
  const dims=()=>{nlx=Math.max(2,Math.ceil(km/sp)+1);nly=Math.max(2,Math.ceil(kh/sp)+1)};dims();while(nlx*nly>400){sp*=1.25;dims()}
  const la=[],lo=[];for(let y=0;y<nly;y++)for(let x=0;x<nlx;x++){la.push((G.n-y/(nly-1)*(G.n-G.s)).toFixed(3));lo.push((G.w+x/(nlx-1)*(G.e-G.w)).toFixed(3))}
@@ -391,8 +400,8 @@ const km=(G.e-G.w)*111.32*Math.cos((G.n+G.s)/2*Math.PI/180),kh=(G.n-G.s)*111.32;
  note('OK',`Weather source: ${forecast?(hind?'recent Hindcast via Forecast past_days':'Forecast'):'Historical archive'}; required ${first} to ${last}.`);
  for(let i=0;i<la.length;i+=40){const upto=Math.min(i+40,la.length),message=`Weather ${upto}/${la.length} points (${forecast?'recent/forecast':'archive'})…`;log(message);prepStage('weather','active',message,i/la.length);
   const url=`${base}?latitude=${la.slice(i,upto)}&longitude=${lo.slice(i,upto)}&hourly=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&timezone=UTC${tail}`,key=url+(forecast?hrS:'');
-  let j=await idb('get',key),fromCache=!!j;const valid=body=>{const items=Array.isArray(body)?body:[body];return items.length===upto-i&&items.every(o=>Array.isArray(o?.hourly?.time)&&['temperature_2m','relative_humidity_2m','precipitation','wind_speed_10m','wind_direction_10m'].every(k=>Array.isArray(o.hourly[k])&&o.hourly[k].length===o.hourly.time.length))};
-  if(!valid(j)){if(fromCache)note('WARN',`Open-Meteo: invalid cached chunk ${i+1}-${upto}; fetching again.`);j=await getJ(url,'Open-Meteo',3,25000);if(!valid(j))throw Error(`Open-Meteo returned incomplete hourly data for points ${i+1}-${upto}. Try Prepare again.`);await idb('put',key,j);fromCache=false;await sleep(500)}
+  let j=await idb('get',key),fromCache=!!j;DataIO.check(signal);const valid=body=>{const items=Array.isArray(body)?body:[body];return items.length===upto-i&&items.every(o=>Array.isArray(o?.hourly?.time)&&['temperature_2m','relative_humidity_2m','precipitation','wind_speed_10m','wind_direction_10m'].every(k=>Array.isArray(o.hourly[k])&&o.hourly[k].length===o.hourly.time.length)&&o.hourly.time.indexOf(hrS)>=0&&o.hourly.time.indexOf(hrS)+Math.ceil(p.hours)<o.hourly.time.length&&o.hourly.time.every((v,j)=>{const from=o.hourly.time.indexOf(hrS),needed=j>=from&&j<=from+Math.ceil(p.hours)||v.slice(0,10)>=(p.met0||d0)&&v.slice(0,10)<=(p.met1||isoD(ts+p.hours*36e5));return !needed||['temperature_2m','relative_humidity_2m','precipitation','wind_speed_10m','wind_direction_10m'].every(k=>Number.isFinite(o.hourly[k][j]))}))};
+  if(!valid(j)){if(fromCache)note('WARN',`Open-Meteo: invalid cached chunk ${i+1}-${upto}; fetching again.`);j=await getJ(url,'Open-Meteo',3,45000,signal);if(!valid(j))throw Error(`Open-Meteo returned incomplete hourly data for points ${i+1}-${upto}. Try Prepare again.`);await idb('put',key,j);fromCache=false;await DataIO.delay(500,signal)}
   (Array.isArray(j)?j:[j]).forEach(o=>outs.push(o));prepStage('weather','active',`${upto}/${la.length} points${fromCache?' · cached':''}`,upto/la.length)}
  if(outs.length!==la.length)throw Error('Open-Meteo returned '+outs.length+' points, expected '+la.length);
  const t=outs[0].hourly.time,len=t.length,np=outs.length,sIdx=t.indexOf(hrS);if(sIdx<0)throw Error(`Open-Meteo has no data for ${hrS} UTC from ${forecast?'recent Forecast':'historical Archive'}. Check the fire start and weather dates.`);
@@ -416,46 +425,46 @@ function parseCSV(txt,src){const rows=csvRows(txt);if(!rows.length)return[];cons
   if(!Number.isFinite(t)||!Number.isFinite(+c[la])||!Number.isFinite(+c[lo]))continue;
   if($('hiconf').checked&&(conf==='l'||conf==='low'||conf!==''&&Number.isFinite(+conf)&&+conf<30))continue;
   out.push({la:+c[la],lo:+c[lo],date:c[ad],t,b})}return out}
-async function firmsChunk(key,src,bb,d,nd){const url=`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${encodeURIComponent(key)}/${src}/${bb}/${nd}/${d}`,
+async function firmsChunk(key,src,bb,d,nd){const signal=DataIO.signal;const url=`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${encodeURIComponent(key)}/${src}/${bb}/${nd}/${d}`,
  ck=JSON.stringify(['firms3',src,bb,d,nd,$('hiconf').checked]),old=daysBetween(d,isoD(Date.now()))>nd+4;
- if(prepActive&&PREP_CACHE.has(ck))return PREP_CACHE.get(ck);
- if(old){const c=await idb('get',ck);if(c)return c}
- let last;for(let a=0;a<3;a++){try{const r=await fetch(url);if(!r.ok)throw Error('HTTP '+r.status);const txt=await r.text();if(/Invalid MAP_KEY|Error|<html/i.test(txt.slice(0,120)))throw Error(txt.slice(0,100));const rows=parseCSV(txt,src.replace(/_(NRT|SP)$/,''));if(prepActive)PREP_CACHE.set(ck,rows);if(old)await idb('put',ck,rows);return rows}
- catch(e){last=e;if(a<2){note('WARN',`FIRMS ${src} ${d}: request failed; retry ${a+1}/2 (${e.message})`);await sleep(1500*(a+1))}}}
+ const saved=await idb('get',old?ck:ck+':recent');DataIO.check(signal);if(old&&Array.isArray(saved))return saved;if(!old&&saved&&Date.now()-saved.savedAt<3600000&&Array.isArray(saved.rows))return saved.rows;
+ let last;for(let a=0;a<3;a++){try{const txt=await DataIO.request(url,{},'text',30000,signal);if(/Invalid MAP_KEY|Error|<html/i.test(txt.slice(0,120)))throw Error(txt.slice(0,100));const rows=parseCSV(txt,src.replace(/_(NRT|SP)$/,''));await idb('put',old?ck:ck+':recent',old?rows:{savedAt:Date.now(),rows});DataIO.check(signal);return rows}
+ catch(e){DataIO.check(signal);last=e;if(a<2){note('WARN',`FIRMS ${src} ${d}: request failed; retry ${a+1}/2 (${e.message})`);await DataIO.delay(1500*(a+1),signal)}}}
  throw Error(`FIRMS ${src} ${d}: ${last.message}`)}
-async function apiDetections(dA,dB,bb,key){const bases=chosenSources().filter(x=>x!=='EE'),jobs=[];
+async function apiDetections(dA,dB,bb,key){const signal=DataIO.signal;const bases=chosenSources().filter(x=>x!=='EE'),jobs=[];
  for(let d=dA;d<=dB;d=addD(d,5)){const nd=Math.min(5,daysBetween(d,dB)+1),age=daysBetween(d,isoD(Date.now()));for(const b of bases)jobs.push({b,d,nd,age})}
  const all=[],seen=new Set();let k=0,done=0,err=null;
  await Promise.all(Array.from({length:3},async()=>{while(k<jobs.length&&!err){const j=jobs[k++];try{let rows=null,last;
-  for(const src of (j.age>150?[j.b+'_SP',j.b+'_NRT']:[j.b+'_NRT',j.b+'_SP'])){try{rows=await firmsChunk(key,src,bb,j.d,j.nd);break}catch(e){last=e;note('WARN',e.message)}}
+  for(const src of (j.age>150?[j.b+'_SP',j.b+'_NRT']:[j.b+'_NRT',j.b+'_SP'])){try{rows=await firmsChunk(key,src,bb,j.d,j.nd);break}catch(e){DataIO.check(signal);last=e;note('WARN',e.message)}}
   if(!rows)throw last;for(const r of rows){const s=[r.la,r.lo,r.t,r.b].join('|');if(!seen.has(s)){seen.add(s);all.push(r)}}}catch(e){err=e}
-  log(`FIRMS requests ${++done}/${jobs.length}…`);prepStage('fire','active',`${done}/${jobs.length} FIRMS requests`,done/jobs.length)}}));
+  DataIO.check(signal);log(`FIRMS requests ${++done}/${jobs.length}…`);prepStage('fire','active',`${done}/${jobs.length} FIRMS requests`,done/jobs.length)}}));
  if(err)throw err;return all}
-async function probeNet(){for(const[n,u]of[['FIRMS','https://firms.modaps.eosdis.nasa.gov/api/'],['Open-Meteo','https://api.open-meteo.com/v1/forecast?latitude=0&longitude=0'],['Google','https://www.gstatic.com/generate_204'],['OSM tiles','https://tile.openstreetmap.org/0/0/0.png']]){
- const t=Date.now();try{await fetch(u,{mode:'no-cors'});note('INFO','probe '+n+': reachable ('+(Date.now()-t)+' ms)')}catch(e){note('ERR','probe '+n+': FAILED ('+e.name+': '+e.message+')')}}}
-async function eeFirms(dA,dB){await ensureEE();const ck=JSON.stringify(['eef',dA,dB,bboxStr(),$('hiconf').checked]),oldE=(Date.now()-new Date(dB))/864e5>3;
- if(oldE){const c=await idb('get',ck);if(c){LASTSRC='MODIS via Earth Engine (cached)';note('OK','MODIS detections from saved cache: '+c.length);return c}}
- const rows=await eeFirms0(dA,dB);if(oldE)await idb('put',ck,rows);return rows}
-async function eeFirms0(dA,dB){if(!eeReady)throw Error('Sign in to Earth Engine to use MODIS fire detections from Earth Engine.');
+async function probeNet(){const signal=DataIO.signal;for(const[n,u]of[['FIRMS','https://firms.modaps.eosdis.nasa.gov/api/'],['Open-Meteo','https://api.open-meteo.com/v1/forecast?latitude=0&longitude=0'],['Google','https://www.gstatic.com/generate_204'],['OSM tiles','https://tile.openstreetmap.org/0/0/0.png']]){
+ const t=Date.now();try{await DataIO.request(u,{mode:'no-cors'},'text',5000,signal);note('INFO','probe '+n+': reachable ('+(Date.now()-t)+' ms)')}catch(e){DataIO.check(signal);note('ERR','probe '+n+': FAILED ('+e.name+': '+e.message+')')}}}
+async function eeFirms(dA,dB){const signal=DataIO.signal,ck=JSON.stringify(['eef',dA,dB,bboxStr(),$('hiconf').checked]),oldE=(Date.now()-new Date(dB))/864e5>3;
+ const cached=await idb('get',oldE?ck:ck+':recent');DataIO.check(signal);const rows=oldE?cached:cached&&Date.now()-cached.savedAt<3600000?cached.rows:null;
+ if(Array.isArray(rows)){LASTSRC='MODIS via Earth Engine (cached)';return rows}
+ await ensureEE();DataIO.check(signal);const fresh=await DataIO.wait(eeFirms0(dA,dB),signal,90000);await idb('put',oldE?ck:ck+':recent',oldE?fresh:{savedAt:Date.now(),rows:fresh});DataIO.check(signal);return fresh}
+async function eeFirms0(dA,dB){const signal=DataIO.signal;if(!eeReady)throw Error('Sign in to Earth Engine to use MODIS fire detections from Earth Engine.');
  const b=drawn.getBounds(),reg=ee.Geometry.Rectangle([b.getWest(),b.getSouth(),b.getEast(),b.getNorth()],'EPSG:4326',false),
  fc=ee.ImageCollection('FIRMS').filterDate(dA,addD(dB,1)).filterBounds(reg).map(img=>img.select(['T21','confidence']).addBands(ee.Image.pixelLonLat()).sample({region:reg,scale:1000})
   .map(f=>f.set('date',img.date().format('YYYY-MM-dd')))).flatten();
  log('Fire detections from Earth Engine (MODIS, 1 km)…');
  const r=await new Promise((ok,no)=>fc.getInfo((v,er)=>er?no(Error('Earth Engine FIRMS: '+er)):ok(v)));
- const rows=r.features.map(f=>f.properties).filter(o=>!($('hiconf').checked&&o.confidence<30)).map(o=>({la:o.latitude,lo:o.longitude,date:o.date,t:Date.parse(o.date+'T06:00:00Z'),b:'MODIS',day:true}));
+ DataIO.check(signal);const rows=r.features.map(f=>f.properties).filter(o=>!($('hiconf').checked&&o.confidence<30)).map(o=>({la:o.latitude,lo:o.longitude,date:o.date,t:Date.parse(o.date+'T06:00:00Z'),b:'MODIS',day:true}));
  LASTSRC='MODIS via Earth Engine';note('OK','MODIS fire detections via Earth Engine: '+rows.length+' ('+dA+' to '+dB+', day-level times).');return rows}
 const fbOn=()=>eeReady&&Date.now()-FBT<30*60e3;    // once FIRMS failed, MODIS via Earth Engine stays the source for 30 min (not retried on every click)
 async function getDetections(dA,dB,bb,key,force=false){
- const src=chosenSources();if(!src.length)throw Error('Select at least one fire source.');if(!src.some(x=>x!=='EE')||(!key&&eeReady))return eeFirms(dA,dB);
+ const signal=DataIO.signal;const src=chosenSources();if(!src.length)throw Error('Select at least one fire source.');if(!src.some(x=>x!=='EE')||(!key&&eeReady))return eeFirms(dA,dB);
  if(!force&&fbOn()){note('INFO','FIRMS failed recently: using the MODIS fallback (Earth Engine).');return eeFirms(dA,dB)}
  try{note('INFO','FIRMS API '+dA+' to '+dB+' bbox '+bb);const rows=await apiDetections(dA,dB,bb,key);if(src.includes('EE')&&eeReady){const extra=await eeFirms(dA,dB),seen=new Set(rows.map(r=>[r.la,r.lo,r.t,r.b].join('|')));for(const r of extra){const id=[r.la,r.lo,r.t,r.b].join('|');if(!seen.has(id)){seen.add(id);rows.push(r)}}}FBT=0;localStorage.removeItem('wf_fbt');LASTSRC='FIRMS API';note('OK','FIRMS API: '+rows.length+' detections fetched.');return rows}
- catch(e){note('ERR','FIRMS API failed: '+e.message);await probeNet();
+ catch(e){DataIO.check(signal);note('ERR','FIRMS API failed: '+e.message);await probeNet();
   if(eeReady){FBT=Date.now();try{localStorage.setItem('wf_fbt',FBT)}catch(_){}note('INFO','Falling back to MODIS detections from Earth Engine (1 km, daily).');LASTSRC='MODIS via Earth Engine (fallback)';return eeFirms(dA,dB)}throw e}}
 const bboxStr=()=>{const b=drawn.getBounds();return[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].map(v=>v.toFixed(4)).join(',')};
 $('firmsfile').onchange=e=>{const f=e.target.files[0];if(!f){FILEROWS=null;return}f.text().then(t=>{FILEROWS=parseCSV(t);log(`Loaded ${FILEROWS.length} detections from the CSV file. They are used instead of the FIRMS API.`)}).catch(x=>{FILEROWS=null;log('CSV error: '+x.message)})};
-async function loadFire(p){const hind=p.mode==='hind',tA=hind?startMs(p):Date.now()-p.look*36e5,tB=hind?tA+p.hours*36e5:Date.now();let rows;
+async function loadFire(p){const signal=DataIO.signal;const hind=p.mode==='hind',tA=hind?startMs(p):Date.now()-p.look*36e5,tB=hind?tA+p.hours*36e5:Date.now();let rows;
  if(FILEROWS)rows=FILEROWS;else if(hind&&HROWS)rows=HROWS;else{const key=$('firms').value.trim();if(!key&&!eeReady){log('Enter a FIRMS key or sign in to Earth Engine.');return null}rows=await getDetections(isoD(tA),isoD(tB),bboxStr(),key)}
- const selected=hind&&SEL.size,days=SEL,dotsSeen=new Set();let n=0,burnable=0;dots.clearLayers();G.seedSpec=[];G.dets=[];G.skipped=[];
+ DataIO.check(signal);const selected=hind&&SEL.size,days=SEL,dotsSeen=new Set();let n=0,burnable=0;dots.clearLayers();G.seedSpec=[];G.dets=[];G.skipped=[];
  for(const r of rows){if(selected?!days.has(r.date):(r.day?r.date<isoD(tA)||r.date>isoD(tB):r.t<tA||r.t>tB))continue;
   const i=cellAt(r.la,r.lo);if(i<0||!G.inside[i])continue;n++;const rad=r.b.startsWith('MODIS')?500:190,ok=!cellBlocked(i);
   L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,weight:1,color:'#fff',fillColor:ok?'#a855f7':'#38bdf8',fillOpacity:.95}).addTo(dots);
@@ -470,11 +479,11 @@ function selectedEvents(){return eventRanges().filter(g=>g.days.some(d=>SEL.has(
 function renderHist(){const groups=eventRanges(),tot=groups.reduce((n,g)=>n+g.n,0);$('hist').innerHTML=tot?`<b>${tot}</b> detections in <b>${groups.length}</b> event ranges (${LASTSRC||'loaded'}).<br><a href="#" data-all="1">${LANG==='hi'?'सभी चुनें':'Select all'}</a> · <a href="#" data-none="1">${LANG==='hi'?'चयन साफ़ करें':'Clear all'}</a><div class="dates">`+groups.map((g,i)=>`<div class="event"><b>${i+1}.</b><a href="#" data-r="${i}" class="${g.days.some(d=>SEL.has(d))?'sel':''}">${g.start}${g.end!==g.start?' – '+g.end:''} (${g.n})</a></div>`).join('')+'</div>'+`<b>${selectedEvents().length}</b> ${LANG==='hi'?'रेंज चुनी गई हैं।':'ranges selected.'}`:(LANG==='hi'?'इस क्षेत्र और अवधि में कोई डिटेक्शन नहीं मिला। तारीखें और FIRMS कुंजी जाँचें।':'No detections in this area and period. Check dates and the FIRMS key.')}
 function applySel(){if(!SEL.size)return;const groups=selectedEvents();if(!groups.length)return;if(MODE!=='hind')document.querySelector('.tabs button[data-m=hind]').click();$('hs').value=groups[0].start;$('hh').value=0;const hours=groups.reduce((sum,g)=>sum+(daysBetween(g.start,g.end)+1)*24,0);$('hours').value=hours;useFireDefaults(groups[0].start,groups.at(-1).end)}
 function histMessage(t){$('hist').textContent=t;log(t)}
-$('hbtn').onclick=async()=>{const b=$('hbtn');try{if(!AOI)return histMessage('Draw an area on the map or load a GeoJSON area first.');const key=$('firms').value.trim();if(!key&&!FILEROWS&&!eeReady)return histMessage('Enter your NASA FIRMS map key under Accounts, or sign in to Earth Engine first.');b.disabled=true;saveKeys();histMessage('Loading fire detections…');
- const dA=$('fh0').value,dB=$('fh1').value,rows=FILEROWS||await getDetections(dA,dB,bboxStr(),key,true),bd=drawn.getBounds();clearHist();dropGrid();
+$('hbtn').onclick=async()=>{const b=$('hbtn'),signal=DataIO.signal;try{if(!AOI)return histMessage('Draw an area on the map or load a GeoJSON area first.');const key=$('firms').value.trim();if(!key&&!FILEROWS&&!eeReady)return histMessage('Enter your NASA FIRMS map key under Accounts, or sign in to Earth Engine first.');b.disabled=true;saveKeys();histMessage('Loading fire detections…');
+ const dA=$('fh0').value,dB=$('fh1').value,rows=FILEROWS||await getDetections(dA,dB,bboxStr(),key,true),bd=drawn.getBounds();DataIO.check(signal);clearHist();dropGrid();
  const keep=[];for(const r of rows){if(r.date<dA||r.date>dB||!bd.contains([r.la,r.lo]))continue;keep.push(r);const o=HBY[r.date]||(HBY[r.date]={n:0,t:1e15});o.n++;o.t=Math.min(o.t,r.t);
   L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,weight:1,color:'#fff',fillColor:'hsl('+(+r.date.slice(5,7)*30)+',90%,55%)',fillOpacity:.9}).addTo(hdots)}
- HROWS=keep;if(FILEROWS)LASTSRC='CSV file';renderHist();$('firebox').open=true;log(`Fire history: ${keep.length} detections on ${Object.keys(HBY).length} dates.`)}catch(e){histMessage('Error: '+(e.message||e))}finally{b.disabled=false}};
+ HROWS=keep;if(FILEROWS)LASTSRC='CSV file';renderHist();$('firebox').open=true;log(`Fire history: ${keep.length} detections on ${Object.keys(HBY).length} dates.`)}catch(e){if(!signal.aborted)histMessage('Error: '+(e.message||e))}finally{if(!signal.aborted)b.disabled=false}};
 $('hist').onclick=e=>{const a=e.target.closest('a');if(!a)return;e.preventDefault();
  if(a.dataset.all)Object.keys(HBY).forEach(d=>SEL.add(d));else if(a.dataset.none)SEL.clear();else if(a.dataset.r){const g=eventRanges()[+a.dataset.r];if(!g)return;const on=g.days.some(d=>SEL.has(d));g.days.forEach(d=>on?SEL.delete(d):SEL.add(d))}else return;
  applySel();renderHist()};
@@ -488,7 +497,7 @@ const lop=()=>clamp((+$('lop').value||100)/100,.2,1);
 function prepSignature(p,weatherMethod=$('weathermethod').value){return JSON.stringify([AOI,p,startMs(p),selectedEvents(),[...SEL],
  $('noee').checked,chosenSources(),$('hiconf').checked,FILEROWS,HROWS,USER_LINES,
  FIELD.weather,speciesNames(),weatherMethod,$('litter').checked,$('litterclass').value])}
-async function prepareData(retry=false){if(prepActive||running)return;const b=$('prep');try{
+async function prepareData(retry=false){if(prepActive||running)return;const b=$('prep'),signal=DataIO.signal;try{
  if(!AOI){checklist([[false,'Area of interest missing','अध्ययन क्षेत्र नहीं मिला']]);return log('Draw or load an area first.')}
  const p=P(),key=prepSignature(p),resume=!!(retry&&prepCheckpoint?.key===key&&G&&G===prepCheckpoint.grid);
  if(retry&&!resume){$('retryprep').hidden=true;DATA_READY=false;$('run').disabled=true;return log('Settings or area changed. Press Prepare data; only matching cached requests will be reused.')}
@@ -499,7 +508,7 @@ async function prepareData(retry=false){if(prepActive||running)return;const b=$(
  build({w:bb.getWest(),e:bb.getEast(),s:bb.getSouth(),n:bb.getNorth()},p,AOI);mkOverlays();prepCheckpoint.grid=G;prepStage('area','done',`${G.nx} × ${G.ny} · ${G.N.toLocaleString()} cells`)}
  const stage=async(key,detail,work,state,summary)=>{
   if(['done','warn'].includes(prepStates[key]?.state))return prepCheckpoint.results[key];
-  prepStage(key,'active',detail);const weatherMethod=$('weathermethod').value,result=await work();
+  prepStage(key,'active',detail);const weatherMethod=$('weathermethod').value,result=await DataIO.wait(work(),signal);DataIO.check(signal);
   if(G!==prepCheckpoint.grid||prepSignature(P(),key==='weather'?weatherMethod:$('weathermethod').value)!==prepCheckpoint.key)throw Error('Settings or area changed during preparation. Press Prepare data.');
   prepCheckpoint.key=prepSignature(P());prepCheckpoint.results[key]=result;prepStage(key,typeof state==='function'?state(result):state,summary(result));return result};
  await stage('satellite','Loading missing Earth Engine tiles…',()=>loadEE(p),$('noee').checked?'warn':'done',()=>$('noee').checked?'Skipped for testing; real raster data not loaded':G.gaps||'Rasters loaded');G.params=p;
@@ -509,8 +518,8 @@ async function prepareData(retry=false){if(prepActive||running)return;const b=$(
  const f=await stage('fire','Loading missing detections…',()=>loadFire(p),r=>r?.seeds?'done':'warn',r=>r?.seeds?`${r.seeds} ignition points`:'No burnable detections; choose fire dates or use map ignition');
  resetState(p.seedR);drawBG();prepStage('fire',f?.seeds?'done':'warn',f?.seeds?`${f.seeds} ignition points`:'No burnable detections; choose fire dates or use map ignition');if(prepSignature(P())!==prepCheckpoint.key||G!==prepCheckpoint.grid)throw Error('Settings or area changed during preparation. Press Prepare data for the current settings.');DATA_READY=true;$('run').disabled=false;$('retryprep').hidden=true;checklist([[true,`Area: ${G.N} cells`,`क्षेत्र: ${G.N} सेल`],[!$('noee').checked,`Satellite and terrain: ${G.gaps||'loaded'}`,'उपग्रह और भूभाग: '+(G.gaps||'लोड')],[true,`Road/river barriers: ${barriers.roads} roads, ${barriers.rivers} waterways`,`सड़क/नदी अवरोध: ${barriers.roads} सड़कें, ${barriers.rivers} जलधाराएँ`],[!!G.M,`Weather: ${G.M?.np||0} points`,`मौसम: ${G.M?.np||0} बिंदु`],[!!f?.seeds,`Ignition: ${f?.seeds||0} points`,`इग्निशन: ${f?.seeds||0} बिंदु`]]);map.fitBounds([[G.s,G.w],[G.n,G.e]]);
  log(`Ready: ${G.nx} × ${G.ny} cells of ${p.cell} m, weather lattice ${G.M.nlx} × ${G.M.nly} (${G.M.sp.toFixed(1)} km). ${f?`${f.nd} FIRMS detections, ${f.seeds} ignition points.`:''} ${G.gaps||''}${f&&!f.nd?' No FIRMS detections in this window: use "Show fire history" to find real fire dates.':''}`)}
- catch(e){DATA_READY=false;prepStage(prepCurrent||'area','failed',String(e.message||e));checklist([[!!G,'Area of interest','अध्ययन क्षेत्र'],[false,`Preparation incomplete: ${e.message||e}`,`तैयारी अधूरी: ${e.message||e}`]]);log('Error: '+(e.message||e));note('ERR','stack: '+String(e.stack||'').split('\n').slice(0,3).join(' | '))}
- finally{prepStop();b.disabled=false;$('retryprep').disabled=false;$('retryprep').hidden=DATA_READY||!G||G!==prepCheckpoint?.grid||prepSignature(P())!==prepCheckpoint?.key;$('run').disabled=!DATA_READY}}
+ catch(e){if(signal.aborted)return;DATA_READY=false;prepStage(prepCurrent||'area','failed',String(e.message||e));checklist([[!!G,'Area of interest','अध्ययन क्षेत्र'],[false,`Preparation incomplete: ${e.message||e}`,`तैयारी अधूरी: ${e.message||e}`]]);log('Error: '+(e.message||e));note('ERR','stack: '+String(e.stack||'').split('\n').slice(0,3).join(' | '))}
+ finally{if(!signal.aborted){prepStop();b.disabled=false;$('retryprep').disabled=false;$('retryprep').hidden=DATA_READY||!G||G!==prepCheckpoint?.grid||prepSignature(P())!==prepCheckpoint?.key;$('run').disabled=!DATA_READY}}}
 $('prep').onclick=()=>prepareData();
 $('retryprep').onclick=()=>prepareData(true);
 map.on('click',ev=>{if(DATA_READY&&G&&G.im&&!running){const i=cellAt(ev.latlng.lat,ev.latlng.lng);if(i>=0){G.centers.push(i);igniteDisc(i,+$('seedr').value||60);G.ctx.putImageData(G.im,0,0)}}});
@@ -600,8 +609,8 @@ function charts(){CH.forEach(c=>c&&c.destroy());Chart.defaults.color='#c9b8b0';C
 
 /* ================= run ================= */
 function clearHist(){hdots.clearLayers();HROWS=null;HBY={};SEL.clear();SKIPN=0;const h=$('hist');if(h)h.innerHTML=''}
-$('reset').onclick=()=>{if(prepActive)return;prepCheckpoint=null;PREP_CACHE.clear();$('retryprep').hidden=true;running=false;videoGeneration++;if(rec&&rec.state!=='inactive')try{rec.stop()}catch(e){note('ERR','Video stop on reset: '+e.message)}rec=null;if(CALWORKER){CALWORKER.terminate();CALWORKER=null;CALCANCEL?.();CALCANCEL=null}clearPreview();dropGrid();drawn.clearLayers();AOI=null;localStorage.removeItem('wf_aoi');clearHist();dots.clearLayers();H=null;EVENTS=[];METRICS=[];RUNS=[];PROB=null;BASE=CAL=CANDIDATE=null;SEARCH=[];REFS=[];FILEROWS=null;USER_LINES=null;W=null;WX_CACHE.clear();$('aoifile').value='';$('barrierfile').value='';$('barrierstatus').textContent=bilingual('If online geometry is unavailable, supply road/river LineString GeoJSON here.','ऑनलाइन geometry उपलब्ध न हो तो सड़क/नदी LineString GeoJSON यहाँ दें।');$('firmsfile').value='';clearFieldInputs();
- for(const id of ['sensor','gap','hiconf','ww0','ww1','dw0','dw1','wsp','noee','dt','r0','tb','seedr','look','ignmode','moistScale','rainScale','usebi','bxsel','bthr','pre','post','tol','runs','lop','lyr','calbudget','calrepeats','calruns','customruns']){const e=$(id);if(e.type==='checkbox')e.checked=e.defaultChecked;else e.value=e.defaultValue}
+$('reset').onclick=()=>{DataIO.reset();$('run').textContent=bilingual('Run baseline simulation','मूल सिमुलेशन चलाएँ');prepActive=false;$('prep').disabled=false;$('retryprep').disabled=false;$('hbtn').disabled=false;$('previewcure').disabled=false;prepCheckpoint=null;PREP_CACHE.clear();$('retryprep').hidden=true;running=false;videoGeneration++;if(rec&&rec.state!=='inactive')try{rec.stop()}catch(e){note('ERR','Video stop on reset: '+e.message)}rec=null;if(CALWORKER){CALWORKER.terminate();CALWORKER=null;CALCANCEL?.();CALCANCEL=null}clearPreview();dropGrid();drawn.clearLayers();AOI=null;localStorage.removeItem('wf_aoi');clearHist();dots.clearLayers();H=null;EVENTS=[];METRICS=[];RUNS=[];PROB=null;BASE=CAL=CANDIDATE=null;SEARCH=[];REFS=[];FILEROWS=null;USER_LINES=null;W=null;WX_CACHE.clear();$('aoifile').value='';$('barrierfile').value='';$('barrierstatus').textContent=bilingual('If online geometry is unavailable, supply road/river LineString GeoJSON here.','ऑनलाइन geometry उपलब्ध न हो तो सड़क/नदी LineString GeoJSON यहाँ दें।');$('firmsfile').value='';clearFieldInputs();
+ for(const id of ['sensor','gap','hiconf','ww0','ww1','dw0','dw1','wsp','noee','dt','r0','tb','seedr','look','ignmode','moistScale','rainScale','usebi','bxsel','bthr','pre','post','tol','runs','lop','lyr','calbudget','calrepeats','calruns','customruns']){const e=$(id);if(e.type==='checkbox')e.checked=e.defaultChecked;else e.value=e.tagName==='SELECT'?([...e.options].find(o=>o.defaultSelected)||e.options[0]).value:e.defaultValue}
  for(const id of ['nm0','nm1','wi0','wi1','lst0','lst1','met0','met1'])$(id).value='';$('cell').value='30';$('fh1').value=isoD(Date.now());$('fh0').value=addD($('fh1').value,-365);$('hs').value='2026-04-10';$('hh').value='0';$('hours').value='12';document.querySelectorAll('.firesrc').forEach((x,i)=>x.checked=i===0);
  $('dem').value='cop';$('curethr').value='0.10';$('curevalue').textContent='0.10';document.querySelectorAll('#weights input').forEach(e=>e.value=e.defaultValue);prepActive=false;prepStates={};prepCurrent='';$('prepsteps').replaceChildren();$('prepstatus').textContent='';$('prepprogress').value=0;
  document.querySelector('.tabs button[data-m=now]').click();$('hist').textContent='';$('checklist').textContent='';for(const id of ['val','comparison','candidateTable','paramCompare','calEvents','obsstatus','calstatus','finalstatus','loadprogress','calLive','holdoutComparison','decision'])$(id).innerHTML='';$('calprogress').value=0;$('tunerows').innerHTML='';renderTune();OPTRESULT=HOLDRESULT=null;OPTELIGIBLE=false;$('acceptcal').disabled=true;updatePlan();$('stopcal').hidden=true;$('autocal').disabled=false;$('legend').textContent='';VIDEO={baseline:null,calibrated:null};for(const id of ['basevideo','calvideo'])$(id).hidden=true;$('videostatus').textContent=bilingual('After a run finishes, its video will be available here.','रन पूरा होने पर उसकी वीडियो यहाँ डाउनलोड की जा सकती है।');CH.forEach(c=>c?.destroy());CH=[];EXCH.forEach(c=>c?.destroy());EXCH=[];document.querySelectorAll('#resultsbox canvas').forEach(c=>c.getContext('2d').clearRect(0,0,c.width,c.height));
@@ -612,19 +621,19 @@ function diag(p){try{const i=G.act[0],x=i%G.nx,y=(i/G.nx)|0;setWeather(0);wxAt(x
 function record(tm){let cx=G.nx/2,cy=G.ny/2;if(G.act.length){let sx=0,sy=0;for(const i of G.act){sx+=i%G.nx;sy+=(i/G.nx)|0}cx=sx/G.act.length;cy=sy/G.act.length;G.lastC=[cx,cy]}else if(G.lastC)[cx,cy]=G.lastC;
  const ci=clamp(Math.round(cy),0,G.ny-1)*G.nx+clamp(Math.round(cx),0,G.nx-1);wxAt(cx,cy,G.z[ci]);const a=G.cell*G.cell/1e6;
  H.t.push(+(tm/60).toFixed(3));H.area.push(+((G.nBurnt+G.act.length)*a).toFixed(3));H.act.push(+(G.act.length*a).toFixed(3));H.ws.push(+wV.toFixed(1));H.wd.push(Math.round(wDir));H.T.push(+wT.toFixed(1));H.RH.push(Math.round(wRH))}
-async function simulateEvents(p,display,selectedGroups=EVENTS){const groups=selectedGroups.length?selectedGroups:[{start:isoD(startMs(p)),end:isoD(startMs(p)+p.hours*36e5)}],allSeeds=G.seedSpec.slice(),union=new Uint8Array(G.N),eventMasks=[],originalM=G.M;let elapsed=0;
+async function simulateEvents(p,display,selectedGroups=EVENTS){const signal=DataIO.signal;const groups=selectedGroups.length?selectedGroups:[{start:isoD(startMs(p)),end:isoD(startMs(p)+p.hours*36e5)}],allSeeds=G.seedSpec.slice(),union=new Uint8Array(G.N),eventMasks=[],originalM=G.M;let elapsed=0;
  for(let e=0;e<groups.length&&running;e++){const ev=groups[e],hours=Math.min(p.hours,(daysBetween(ev.start,ev.end)+1)*24),begin=selectedGroups.length?Date.parse(ev.start+'T00:00:00Z'):startMs(p);
   G.seedSpec=selectedGroups.length?allSeeds.filter(o=>o.date>=ev.start&&o.date<=ev.end):allSeeds;resetState(p.seedR);G.tbs=Math.max(1,Math.round(p.tb/p.dt));G.tbMax=G.tbs*3;
   for(let offset=0;offset<hours&&running;offset+=240){const part=Math.min(240,hours-offset),q={...p,start:begin+offset*36e5,hours:part,met0:isoD(begin+offset*36e5),met1:isoD(begin+(offset+part)*36e5)};
-   await loadMet(q);for(let k=0,n=Math.ceil(part*60/p.dt);k<n&&running;k++){step(q,k*p.dt);const tm=elapsed*60+k*p.dt+p.dt;
-    if(display&&((k+1)%Math.max(1,Math.round(10/p.dt))===0||k===n-1||!G.act.length)){drawFrame();vframe(tm);record(tm);log(`Event ${e+1}/${groups.length}, t + ${(tm/60).toFixed(1)} h: ${G.nBurnt+G.act.length} burnt/burning cells.`);await(rec?sleep(60):raf())}
+   await loadMet(q);DataIO.check(signal);for(let k=0,n=Math.ceil(part*60/p.dt);k<n&&running;k++){step(q,k*p.dt);const tm=elapsed*60+k*p.dt+p.dt;
+    if(display&&((k+1)%Math.max(1,Math.round(10/p.dt))===0||k===n-1||!G.act.length)){drawFrame();vframe(tm);record(tm);log(`Event ${e+1}/${groups.length}, t + ${(tm/60).toFixed(1)} h: ${G.nBurnt+G.act.length} burnt/burning cells.`);await(rec?sleep(60):raf());DataIO.check(signal)}
     if(!G.act.length)break}elapsed+=part}
   const eventMask=new Uint8Array(G.N);for(let i=0;i<G.N;i++)if(G.state[i]===1||G.state[i]===2){union[i]=1;eventMask[i]=1}eventMasks.push(eventMask)}
- G.seedSpec=allSeeds;G.M=originalM;W=null;for(let i=0;i<G.N;i++){G.state[i]=union[i]?2:cellBlocked(i)?3:0;if(G.im){const k=i*4;if(union[i]){G.im.data[k]=52;G.im.data[k+1]=38;G.im.data[k+2]=38;G.im.data[k+3]=215}else G.im.data[k+3]=0}}if(G.im)G.ctx.putImageData(G.im,0,0);union.eventMasks=eventMasks;return union}
-$('run').onclick=async()=>{if(running){running=false;return}if(!DATA_READY||!G||!G.M)return log('Prepare data first.');const p=P(),b=$('run');refreshFuel(p);if(!G.seedSpec.length&&!G.centers.length)return log('Nothing to ignite. Select fire ranges with burnable points.');
+ DataIO.check(signal);G.seedSpec=allSeeds;G.M=originalM;W=null;for(let i=0;i<G.N;i++){G.state[i]=union[i]?2:cellBlocked(i)?3:0;if(G.im){const k=i*4;if(union[i]){G.im.data[k]=52;G.im.data[k+1]=38;G.im.data[k+2]=38;G.im.data[k+3]=215}else G.im.data[k+3]=0}}if(G.im)G.ctx.putImageData(G.im,0,0);union.eventMasks=eventMasks;return union}
+$('run').onclick=async()=>{if(running){running=false;return}if(!DATA_READY||!G||!G.M)return log('Prepare data first.');const p=P(),b=$('run'),signal=DataIO.signal;refreshFuel(p);if(!G.seedSpec.length&&!G.centers.length)return log('Nothing to ignite. Select fire ranges with burnable points.');
  running=true;RUN_KIND='baseline';b.textContent=bilingual('Stop','रोकें');H={t:[],area:[],act:[],ws:[],wd:[],T:[],RH:[]};$('val').innerHTML='';METRICS=[];PROB=null;G.prob=null;BASE=CAL=CANDIDATE=null;SEARCH=[];OPTRESULT=HOLDRESULT=null;OPTELIGIBLE=false;$('acceptcal').disabled=true;try{VIDEO.calibrated=null;$('calvideo').hidden=true;vstart();const mask=await simulateEvents(p,true);if(!running)throw Error('Baseline run stopped.');BASE={state:G.state.slice(),eventMasks:mask.eventMasks.map(a=>a.slice()),p:{...p},history:H};if(H.t.length)charts();drawFrame();drawBG();
  note('OK',`Baseline finished: ${G.state.reduce((n,v)=>n+(v===2),0)} burnt cells in the union.`);log('Baseline finished. Load observed burn and validate.');if(G.hasBI||G.dets.length)validate(BASE);renderCalibrationEvents();openStep('validbox')}
- catch(e){log('Error: '+(e.message||e));note('ERR','run: '+String(e.stack||e))}finally{await vfinish();running=false;b.textContent=bilingual('Run baseline simulation','मूल सिमुलेशन चलाएँ')}};
+ catch(e){if(signal.aborted)return;log('Error: '+(e.message||e));note('ERR','run: '+String(e.stack||e))}finally{if(!signal.aborted){await vfinish();running=false;b.textContent=bilingual('Run baseline simulation','मूल सिमुलेशन चलाएँ')}}};
 
 /* Additional analyses are explicit actions so a phone never silently runs an ensemble. */
 function independentReference(){if(!G)return null;const ref=new Uint8Array(G.N),valid=new Uint8Array(G.N),sat=G.hasBI,thr=(+$('bthr').value||.1)*1e4;if(!sat&&!G.dets.length)return null;for(let i=0;i<G.N;i++){if(!G.inside[i]||NF[G.lc[i]]||G.water[i]||sat&&G.bx[i]===MISSING)continue;valid[i]=1;ref[i]=sat?Number(G.bx[i]>thr):G.obs[i]}return{ref,valid}}
@@ -632,9 +641,9 @@ function curvePoints(prob,ref,valid){let pos=0,neg=0;const bins=new Map();for(le
 function xyChart(el,label,points,color,slot){EXCH[slot]?.destroy();EXCH[slot]=new Chart($(el),{type:'line',data:{datasets:[{label,data:points,borderColor:color,pointRadius:0,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,animation:false,scales:{x:{type:'linear',min:0,max:1},y:{min:0,max:1}}}})}
 $('ensemble').onclick=async()=>{if(running)return;const prior=independentReference();if(!G||!G.M||!prior)return log('Prepare and run with satellite burn reference or FIRMS reference first.');const count=clamp(+$('runs').value||10,10,30),saved={state:G.state.slice(),pixels:G.im.data.slice(),M:G.M,H,seedSpec:G.seedSpec.slice()},prob=new Float32Array(G.N),btn=$('ensemble');running=true;btn.disabled=true;
  try{const p=P();for(let k=0;k<count&&running;k++){log(`Ensemble ${k+1}/${count}…`);const mask=await simulateEvents(p,false);for(let i=0;i<G.N;i++)prob[i]+=mask[i]/count;await raf()}if(!running)throw Error('Ensemble stopped before completion.');G.prob=PROB=prob;const c=curvePoints(prob,prior.ref,prior.valid);xyChart('rocChart',`ROC AUC ${c.auc.toFixed(3)}`,c.roc,'#ff7a00',1);xyChart('prChart',`PR AP ${c.ap.toFixed(3)}`,c.pr,'#38bdf8',2);RUNS.push({type:'ensemble',runs:count,auc:c.auc,ap:c.ap});log(`Burn probability from ${count} runs; ROC AUC ${c.auc.toFixed(3)}, PR AP ${c.ap.toFixed(3)}.`)}catch(e){log('Error: '+e.message)}finally{G.state.set(saved.state);G.im.data.set(saved.pixels);G.ctx.putImageData(G.im,0,0);G.M=saved.M;G.seedSpec=saved.seedSpec;H=saved.H;W=null;running=false;btn.disabled=false;drawBG();if(G.prob&&BASE)validate(BASE)}};
-async function eventReference(ev,p){if(!eeReady)throw Error('Sign in to Earth Engine for event-specific satellite reference.');const key=JSON.stringify(['event-bi-1',ev.start,ev.end,G.w,G.n,G.nx,G.ny,p.sensor,p.pre,p.post,p.bx]),cached=await idb('get',key);if(cached)return cached;
+async function eventReference(ev,p){const signal=DataIO.signal,grid=G;if(!eeReady)throw Error('Sign in to Earth Engine for event-specific satellite reference.');const key=JSON.stringify(['event-bi-2',ev.start,ev.end,G.w,G.n,G.dx,G.dy,G.nx,G.ny,p.sensor,p.pre,p.post,p.bx]),cached=await idb('get',key);DataIO.check(signal);if(cached)return cached;
  const image=eeImage({...p,start:Date.parse(ev.start+'T00:00:00Z'),hours:(daysBetween(ev.start,ev.end)+1)*24,eventEnd:ev.end,bi:true},ee.Geometry.Rectangle([G.w,G.s,G.e,G.n],'EPSG:4326',false)),out=new Int16Array(G.N).fill(MISSING);
- for(let y=0;y<G.ny;y+=TS)for(let x=0;x<G.nx;x+=TS){const tw=Math.min(TS,G.nx-x),th=Math.min(TS,G.ny-y),tile=await eeTile(image,x,y,tw,th);for(let j=0;j<th;j++)for(let i=0;i<tw;i++)out[(y+j)*G.nx+x+i]=tile.bx[j*tw+i]}
+ for(let y=0;y<G.ny;y+=TS)for(let x=0;x<G.nx;x+=TS){const tw=Math.min(TS,G.nx-x),th=Math.min(TS,G.ny-y),tileKey=key+JSON.stringify([x,y,tw,th]);let tile=await idb('get',tileKey);DataIO.check(signal);if(!tile||tile.bx?.length!==tw*th)tile=await DataIO.wait(DataIO.once(tileKey,async()=>{const value=await eeTile(image,x,y,tw,th,grid);if(value.bx?.length!==tw*th)throw Error('Incomplete observed-burn tile');await idb('put',tileKey,value);return value}),signal,90000);DataIO.check(signal);for(let j=0;j<th;j++)for(let i=0;i<tw;i++)out[(y+j)*G.nx+x+i]=tile.bx[j*tw+i]}
  await idb('put',key,out);return out}
 function eventIoU(mask,bx){let hit=0,union=0,pred=0,obs=0;const threshold=(+$('bthr').value||.1)*1e4;for(let i=0;i<G.N;i++){if(!G.inside[i]||G.water[i]||NF[G.lc[i]]||bx[i]===MISSING)continue;const a=!!mask[i],b=bx[i]>threshold;if(a)pred++;if(b)obs++;if(a&&b)hit++;if(a||b)union++}return{score:union?hit/union:0,pred,obs,valid:union}}
 function barChart(id,labels,values,slot){EXCH[slot]?.destroy();EXCH[slot]=new Chart($(id),{type:'bar',data:{labels,datasets:[{label:'IoU',data:values,backgroundColor:'#ff7a00'}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{min:0,max:1}}}})}
