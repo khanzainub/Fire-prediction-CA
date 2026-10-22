@@ -56,3 +56,9 @@
  #map{position:relative}
  aside>details{scroll-margin-top:10px}
 }
+
+/* Recovery actions appear only on a failed road/river step. */
+.prep-step.failed:has(.barrier-actions){flex-wrap:wrap}
+.barrier-actions{flex:0 0 100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.barrier-actions button{min-width:0;margin:0;padding:6px;font-size:.76rem;min-height:36px}
+.barrier-actions small{grid-column:1/-1;line-height:1.45}
