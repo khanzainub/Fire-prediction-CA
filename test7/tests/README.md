@@ -20,3 +20,5 @@ PLAYWRIGHT_MODULE=/tmp/fire-tests/node_modules/playwright FIRE_TEST_DEPS=/tmp/fi
 The browser suite uses controlled, explicitly test-only Earth Engine, Overpass and weather responses. It exercises the real DOM, IndexedDB, preparation pipeline, scientific simulation, optimization worker, ensemble, GeoJSON picker, and TIFF/CSV exporters. It checks partial failures, cached chunks after refresh, selective retry, explicit skip, upload recovery, calibration cancellation/interlocks, late uploads after reset, language switching and missing-data guards. Satellite callbacks and remote responses are fixtures; the scientific model itself is not replaced. Video recording is disabled in this suite.
 
 Passing these checks does not verify Google OAuth, production API availability, physical scientific accuracy, every possible input combination, or browser video/clipboard permissions. Those require live-session/device validation.
+
+The ohsome checks use an explicitly controlled Parquet fixture and a dummy credential. They cover geometry decoding, Authorization header placement, cache reuse, authentication failure, and Remember-on/off persistence. No real API key is included.

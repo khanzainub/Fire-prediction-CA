@@ -96,7 +96,7 @@ $('barrierfile').onchange=async e=>{const f=e.target.files[0];if(!f)return;const
 try{const s=localStorage.getItem('wf_aoi');if(s)addGJ({type:'MultiPolygon',coordinates:JSON.parse(s)})}catch(e){}
 
 /* ================= saved keys, tabs, parameters ================= */
-const KEYS=['firms','client','project','cartokey'];
+const KEYS=['firms','client','project','cartokey','ohsomekey'];
 KEYS.forEach(k=>{const v=localStorage.getItem('wf_'+k);if(v)$(k).value=v});
 const saveKeys=()=>KEYS.forEach(k=>$('remember').checked?localStorage.setItem('wf_'+k,$(k).value.trim()):localStorage.removeItem('wf_'+k));
 $('savesettings').onclick=async()=>{saveKeys();await updateCarto();if(!$('cartokey').value.trim())$('settingsstatus').textContent=bilingual($('remember').checked?'Settings saved in this browser.':'Settings applied for this visit; browser storage is off.',$('remember').checked?'सेटिंग इस ब्राउज़र में सहेजी गईं।':'इस बार के लिए सेटिंग लागू; ब्राउज़र में सहेजना बंद है।');$('accounts').open=false};updateCarto();
@@ -321,6 +321,22 @@ function makeVariation(N){const out=new Float32Array(N);let x=0x72ae391d;for(let
 function applyBareRules(){const values=[];for(let i=0;i<G.N;i++)if(G.inside[i]&&!NF[G.lc[i]]&&G.bsi[i]!==MISSING)values.push(G.bsi[i]);if(values.length<20){note('WARN','BSI has fewer than 20 usable cells; bare-soil percentile rule inactive.');return}values.sort((a,b)=>a-b);const q80=values[Math.floor((values.length-1)*.8)],q95=values[Math.floor((values.length-1)*.95)];if(q95<=q80){note('WARN','BSI has no upper-tail variation; bare-soil percentile rule inactive.');return}let slow=0,blocked=0;for(let i=0;i<G.N;i++)if(G.inside[i]&&G.bsi[i]!==MISSING){const t=clamp((G.bsi[i]-q80)/(q95-q80),0,1);G.bareFactor[i]=1-.65*t;if(t>0)slow++;if(G.bsi[i]>=q95&&G.recent[i]>5500){G.hardBare[i]=1;blocked++}}note('OK',`BSI thresholds: 80th ${(q80/1e4).toFixed(3)}, 95th ${(q95/1e4).toFixed(3)}; ${slow} slowed, ${blocked} blocked with recent NDVI > 0.55.`)}
 /* OpenStreetMap line geometry is used as a surface-fire barrier, not the basemap tiles. */
 function validOSMWays(ways){return Array.isArray(ways)&&ways.every(w=>(w.kind==='road'||w.kind==='river')&&Array.isArray(w.geometry)&&w.geometry.length>1&&w.geometry.every(p=>p&&Number.isFinite(p.lat)&&Number.isFinite(p.lon)&&Math.abs(p.lat)<=90&&Math.abs(p.lon)<=180))}
+// Same road/waterway filters and rasterization; only the OSM transport changes.
+async function fetchOhsomeChunk(job,signal){
+ const key=$('ohsomekey').value.trim(),[south,west,north,east]=job.box.split(',').map(Number);
+ const filter='type:way and '+(job.kind==='road'?'highway in (motorway,trunk,primary,secondary,tertiary,unclassified,residential,service,track)':'waterway in (river,stream,canal) and intermittent!=yes');
+ const options={method:'POST',headers:{'Content-Type':'application/json',Authorization:key},body:JSON.stringify({filter,aoi:[west,south,east,north],time:'latest',clip:false})};
+ for(let attempt=0;attempt<2;attempt++)try{
+  const buffer=await DataIO.request('https://api.heigit.org/ohsome-api/v2/extraction/features.parquet',options,'arrayBuffer',120000,signal);
+  DataIO.check(signal);const {decode}=await import('./vendor/ohsome-parquet.js');DataIO.check(signal);
+  const ways=await decode(buffer,job.kind);DataIO.check(signal);if(!validOSMWays(ways))throw Error('Incomplete ohsome geometry');return ways;
+ }catch(e){DataIO.check(signal);
+  if(e.status===401||e.status===403)throw Error('ohsome key rejected or extraction access denied. Check OSM API key in One-time settings.');
+  if(e.status===429)throw Error('ohsome quota/rate limit reached. Wait before retrying; completed geometry is cached.');
+  if(attempt===0&&(!e.status||e.status>=500)){note('WARN','ohsome connection failed; one retry in 5 seconds.');await DataIO.delay(5000,signal);continue}
+  throw Error('ohsome geometry request failed'+(e.status?' (HTTP '+e.status+')':' (connection, timeout or invalid response)')+'. Completed data is kept; retry, upload GeoJSON or explicitly skip.');
+ }
+}
 async function fetchOSMBarriers(box){
  const signal=DataIO.signal,key='osm-barriers-8:'+box,cached=await idb('get',key),ttl=7*86400000;
  DataIO.check(signal);const fresh=c=>c&&Date.now()-c.savedAt>=0&&Date.now()-c.savedAt<ttl&&validOSMWays(c.ways);
@@ -333,6 +349,10 @@ async function fetchOSMBarriers(box){
  const ways=new Map(),cooldown=new Map();let complete=0;
  for(const job of jobs){
   DataIO.check(signal);const chunkKey='osm-chunk-1:'+job.kind+':'+job.box,saved=await idb('get',chunkKey);DataIO.check(signal);let lines=fresh(saved)?saved.ways:null,last;
+  if(!lines&&$('ohsomekey').value.trim()){
+   prepStage('barriers','active',`${complete}/${jobs.length} geometry chunks complete · ohsome ${job.kind}`,complete/jobs.length);
+   lines=await fetchOhsomeChunk(job,signal);await idb('put',chunkKey,{savedAt:Date.now(),ways:lines});DataIO.check(signal);
+  }
   if(!lines){const filter=job.kind==='road'?'["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|track)$"]':'["waterway"~"^(river|stream|canal)$"]["intermittent"!="yes"]',query=`[out:json][timeout:20];way${filter}(${job.box});out geom qt;`;
    for(let round=0;round<2&&!lines;round++){
     for(const host of hosts){DataIO.check(signal);if(Date.now()<(cooldown.get(host)||0))continue;

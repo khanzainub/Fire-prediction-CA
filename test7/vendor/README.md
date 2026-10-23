@@ -1,0 +1,1 @@
+ohsome-parquet.js is a browser-only bundle of ohsome-parquet-source.js. See LICENSES-ohsome.txt for dependency versions and licenses. Build with esbuild --bundle --format=esm --platform=browser --minify after installing those pinned dependencies. No credentials are part of the bundle. API authentication is supplied at runtime by the account-settings input.
