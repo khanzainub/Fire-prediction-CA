@@ -100,20 +100,40 @@ const KEYS=['firms','client','project','cartokey','ohsomekey'];
 KEYS.forEach(k=>{const v=localStorage.getItem('wf_'+k);if(v)$(k).value=v});
 const saveKeys=()=>KEYS.forEach(k=>$('remember').checked?localStorage.setItem('wf_'+k,$(k).value.trim()):localStorage.removeItem('wf_'+k));
 $('savesettings').onclick=async()=>{saveKeys();await updateCarto();if(!$('cartokey').value.trim())$('settingsstatus').textContent=bilingual($('remember').checked?'Settings saved in this browser.':'Settings applied for this visit; browser storage is off.',$('remember').checked?'सेटिंग इस ब्राउज़र में सहेजी गईं।':'इस बार के लिए सेटिंग लागू; ब्राउज़र में सहेजना बंद है।');$('accounts').open=false};updateCarto();
+let temporalAnchor=$('hs').value,liveStart=Date.now();
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{MODE=b.dataset.m;document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x===b));
- $('hindbox').hidden=MODE!=='hind';if(!SEL.size)$('hours').value={now:12,fore:72,hind:24}[MODE];if(MODE==='hind')$('usebi').checked=true;dropGrid()});
+ $('hindbox').hidden=MODE!=='hind';if(MODE!=='hind'){SEL.clear();EVENTS=[];if(HROWS)renderHist()}liveStart=Date.now()+(MODE==='fore'?2*36e5:0);if(!SEL.size)$('hours').value={now:2,fore:22,hind:24}[MODE];if(MODE==='hind')$('usebi').checked=true;syncTemporal();clearPreview();dropGrid()});
 $('sensor').onchange=()=>{$('cell').value=$('sensor').value==='s2'?10:30;dropGrid()};
 $('fh1').value=new Date().toISOString().slice(0,10);$('fh0').value=addD($('fh1').value,-365);
 function chosenSources(){return [...document.querySelectorAll('.firesrc:checked')].map(x=>x.value)}
 $('gap').onchange=()=>renderHist();$('sensor').onchange=()=>{$('cell').value=$('sensor').value==='s2'?10:30;clearPreview();dropGrid()};$('dem').onchange=dropGrid;
-function useFireDefaults(a,b){if(!a||!b)return;for(const [lo,hi,from,to] of [['nm0','nm1',-30,-1],['wi0','wi1',-30,-1],['met0','met1',0,0],['lst0','lst1',-45,-1]]){if(!$(lo).value)$(lo).value=addD(a,from);if(!$(hi).value)$(hi).value=to?addD(a,to):b}}
+function useFireDefaults(a,b){syncTemporal(a)}
+function syncTemporal(anchor){
+ const start=MODE==='hind'?Date.parse($('hs').value+'T'+String(clamp(+$('hh').value||0,0,23)).padStart(2,'0')+':00:00Z'):liveStart;
+ if(!Number.isFinite(start))return;
+ anchor=anchor||isoD(start);
+ for(const [lo,hi,from,to] of [['nm0','nm1',-30,-1],['wi0','wi1',-30,-1],['lst0','lst1',-45,-1]]){
+  if(!$(lo).value)$(lo).value=addD(temporalAnchor,from);if(!$(hi).value)$(hi).value=addD(temporalAnchor,to);
+ }
+ for(const id of ['ww0','ww1','dw0','dw1'])$(id).value=TemporalSync.shift($(id).value,temporalAnchor,anchor);
+ for(const id of ['nm0','nm1','wi0','wi1','lst0','lst1'])$(id).value=addD(anchor,daysBetween(temporalAnchor,$(id).value));
+ temporalAnchor=anchor;
+ const max=MODE==='now'?2:MODE==='fore'?22:TemporalSync.MAX_HOURS;
+ $('hours').max=max;$('hours').value=clamp(+$('hours').value||max,1,max);
+ $('met0').value=isoD(start);$('met1').value=isoD(start+(+$('hours').value)*36e5);
+}
+function eventStart(ev,p){
+ const start=startMs(p);if(isoD(start)===ev.start)return start;
+ const detected=HBY[ev.start]?.t;return Number.isFinite(detected)?TemporalSync.floor(detected):Date.parse(ev.start+'T00:00:00Z');
+}
+
 
 const weight=id=>clamp(Number($(id).value),0,2);
-const P=()=>({mode:MODE,sensor:$('sensor').value,dem:$('dem').value,cell:Math.max(5,+$('cell').value||30),cureThr:+$('curethr').value,hours:clamp(+$('hours').value||12,1,8760),dt:clamp(+$('dt').value||2,.25,30),
+const P=()=>({mode:MODE,start:startMs({mode:MODE}),sensor:$('sensor').value,dem:$('dem').value,cell:Math.max(5,+$('cell').value||30),cureThr:+$('curethr').value,hours:clamp(+$('hours').value||12,1,MODE==='now'?2:MODE==='fore'?22:TemporalSync.MAX_HOURS),dt:clamp(+$('dt').value||2,.25,30),
  R0:+$('r0').value||10,tb:+$('tb').value||20,seedR:+$('seedr').value||60,look:+$('look').value||24,spc:Math.max(1,+$('wsp').value||5),
  ww0:$('ww0').value,ww1:$('ww1').value,dw0:$('dw0').value,dw1:$('dw1').value,nm0:$('nm0').value,nm1:$('nm1').value,wi0:$('wi0').value,wi1:$('wi1').value,lst0:$('lst0').value,lst1:$('lst1').value,met0:$('met0').value,met1:$('met1').value,ignmode:$('ignmode').value,moistScale:+$('moistScale').value||1,rainScale:+$('rainScale').value||1,bi:$('usebi').checked,bx:$('bxsel').value,pre:+$('pre').value||45,post:+$('post').value||45,
  wCure:weight('wCure'),wNdmi:weight('wNdmi'),wSoil:weight('wSoil'),wSlope:weight('wSlope'),wElev:weight('wElev'),wWind:weight('wWind'),wWindDir:weight('wWindDir'),wTemp:weight('wTemp'),wRh:weight('wRh'),wRain:weight('wRain'),wLST:weight('wLST')});
-const startMs=p=>{if(p.start)return p.start;if(p.mode==='hind')return Date.parse($('hs').value+'T'+String(clamp(+$('hh').value||0,0,23)).padStart(2,'0')+':00:00Z');const n=new Date();n.setUTCMinutes(0,0,0);return+n};
+const startMs=p=>{if(Number.isFinite(p.start))return p.start;if(p.mode==='hind')return Date.parse($('hs').value+'T'+String(clamp(+$('hh').value||0,0,23)).padStart(2,'0')+':00:00Z');return liveStart};
 
 /* ================= cache (IndexedDB, this browser only) ================= */
 DataIO.warn=m=>note('WARN',m);
@@ -428,27 +448,19 @@ function clearFieldInputs(){FIELD.weather=[];FIELD.species=[];FIELD.lookupSignat
 renderSpecies();
 
 /* ================= Open-Meteo lattice ================= */
-const WX_CACHE=new Map();async function loadMet(p){const signal=DataIO.signal;const cacheKey=JSON.stringify([G.w,G.n,G.dx,G.dy,G.nx,G.ny,p.start||startMs(p),p.hours,p.met0,p.met1,p.spc,p.mode]);if(WX_CACHE.has(cacheKey)){G.M=applyFieldWeather(WX_CACHE.get(cacheKey));W=null;prepStage('weather','active','Weather lattice reused from memory cache',1);return}
-const km=(G.e-G.w)*111.32*Math.cos((G.n+G.s)/2*Math.PI/180),kh=(G.n-G.s)*111.32;let sp=p.spc,nlx,nly;
+const WX_CACHE=new Map();async function loadMet(p){const signal=DataIO.signal,grid=G,now=Date.now(),ts=startMs(p);
+ const window=TemporalSync.windowFor(p.mode,ts,p.hours,now),cacheKey=JSON.stringify([G.w,G.n,G.dx,G.dy,G.nx,G.ny,ts,window.hours,p.spc,p.mode]);
+ const saved=WX_CACHE.get(cacheKey);if(saved&&(saved.expires>now)){G.M=applyFieldWeather(saved.M);W=null;return}
+ const km=(G.e-G.w)*111.32*Math.cos((G.n+G.s)/2*Math.PI/180),kh=(G.n-G.s)*111.32;let sp=p.spc,nlx,nly;
  const dims=()=>{nlx=Math.max(2,Math.ceil(km/sp)+1);nly=Math.max(2,Math.ceil(kh/sp)+1)};dims();while(nlx*nly>400){sp*=1.25;dims()}
  const la=[],lo=[];for(let y=0;y<nly;y++)for(let x=0;x<nlx;x++){la.push((G.n-y/(nly-1)*(G.n-G.s)).toFixed(3));lo.push((G.w+x/(nlx-1)*(G.e-G.w)).toFixed(3))}
- const ts=startMs(p),hind=p.mode==='hind',hrS=new Date(ts).toISOString().slice(0,13)+':00',d0=isoD(ts),today=isoD(Date.now()),first=p.met0&&p.met0<addD(d0,-3)?p.met0:addD(d0,-3),last=p.met1&&p.met1>addD(d0,Math.ceil(p.hours/24))?p.met1:addD(d0,Math.ceil(p.hours/24)),
- recent=daysBetween(first,today)<=90&&last<=addD(today,15),forecast=!hind||recent;
- if(forecast&&daysBetween(first,today)>92)throw Error('Selected weather starts more than 92 days ago. Choose Hindcast with historical dates or shorten the weather range.');
- if(forecast&&last>addD(today,15))throw Error('Selected weather extends beyond the 16-day forecast horizon. Shorten the date range.');
- const base=forecast?'https://api.open-meteo.com/v1/forecast':'https://archive-api.open-meteo.com/v1/archive',
- tail=forecast?`&past_days=${clamp(daysBetween(first,today),0,92)}&forecast_days=${clamp(daysBetween(today,last)+1,1,16)}`:`&start_date=${first}&end_date=${last}`,outs=[];
- note('OK',`Weather source: ${forecast?(hind?'recent Hindcast via Forecast past_days':'Forecast'):'Historical archive'}; required ${first} to ${last}.`);
- for(let i=0;i<la.length;i+=40){const upto=Math.min(i+40,la.length),message=`Weather ${upto}/${la.length} points (${forecast?'recent/forecast':'archive'})…`;log(message);prepStage('weather','active',message,i/la.length);
-  const url=`${base}?latitude=${la.slice(i,upto)}&longitude=${lo.slice(i,upto)}&hourly=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&timezone=UTC${tail}`,key=url+(forecast?hrS:'');
-  let j=await idb('get',key),fromCache=!!j;DataIO.check(signal);const valid=body=>{const items=Array.isArray(body)?body:[body];return items.length===upto-i&&items.every(o=>Array.isArray(o?.hourly?.time)&&['temperature_2m','relative_humidity_2m','precipitation','wind_speed_10m','wind_direction_10m'].every(k=>Array.isArray(o.hourly[k])&&o.hourly[k].length===o.hourly.time.length)&&o.hourly.time.indexOf(hrS)>=0&&o.hourly.time.indexOf(hrS)+Math.ceil(p.hours)<o.hourly.time.length&&o.hourly.time.every((v,j)=>{const from=o.hourly.time.indexOf(hrS),needed=j>=from&&j<=from+Math.ceil(p.hours)||v.slice(0,10)>=(p.met0||d0)&&v.slice(0,10)<=(p.met1||isoD(ts+p.hours*36e5));return !needed||['temperature_2m','relative_humidity_2m','precipitation','wind_speed_10m','wind_direction_10m'].every(k=>Number.isFinite(o.hourly[k][j]))}))};
-  if(!valid(j)){if(fromCache)note('WARN',`Open-Meteo: invalid cached chunk ${i+1}-${upto}; fetching again.`);j=await getJ(url,'Open-Meteo',3,45000,signal);if(!valid(j))throw Error(`Open-Meteo returned incomplete hourly data for points ${i+1}-${upto}. Try Prepare again.`);await idb('put',key,j);fromCache=false;await DataIO.delay(500,signal)}
-  (Array.isArray(j)?j:[j]).forEach(o=>outs.push(o));prepStage('weather','active',`${upto}/${la.length} points${fromCache?' · cached':''}`,upto/la.length)}
- if(outs.length!==la.length)throw Error('Open-Meteo returned '+outs.length+' points, expected '+la.length);
- const t=outs[0].hourly.time,len=t.length,np=outs.length,sIdx=t.indexOf(hrS);if(sIdx<0)throw Error(`Open-Meteo has no data for ${hrS} UTC from ${forecast?'recent Forecast':'historical Archive'}. Check the fire start and weather dates.`);
- const ix=t.map((v,i)=>v.slice(0,10)>= (p.met0||d0)&&v.slice(0,10)<= (p.met1||isoD(ts+p.hours*36e5))?i:-1).filter(i=>i>=0);if(!ix.length)throw Error('Open-Meteo has no weather in the selected range.');
- const needed=new Set(ix);for(let i=sIdx;i<=Math.min(len-1,sIdx+Math.ceil(p.hours));i++)needed.add(i);if(sIdx+Math.ceil(p.hours)>=len)throw Error('Open-Meteo weather ends before the simulation finishes. Shorten Duration or adjust the weather dates.');
- for(let q=0;q<outs.length;q++){const h=outs[q].hourly;for(const k of ['temperature_2m','relative_humidity_2m','precipitation','wind_speed_10m','wind_direction_10m'])for(const i of needed)if(!Number.isFinite(h[k][i]))throw Error(`Open-Meteo ${k} missing at ${t[i]||'requested hour'} for point ${q+1}/${np}. Adjust weather dates or retry later.`)}
+ const identity=[G.w,G.n,G.dx,G.dy,G.nx,G.ny,p.spc,sp],hrS=TemporalSync.hour(ts);
+ const outs=await WeatherIntervals.load({identity,lat:la,lon:lo,first:window.first,last:window.last,cacheLast:Math.min(window.cacheLast,TemporalSync.ceil((p.weatherStart??ts)+TemporalSync.MAX_HOURS*36e5)),now,cache:idb,
+  request:url=>getJ(url,'Open-Meteo',3,45000,signal),check:()=>{DataIO.check(signal);if(G!==grid)throw Error('Area changed during weather preparation.');},
+  progress:message=>{log(message);prepStage('weather','active',message)},warn:message=>note('WARN',message)});
+ DataIO.check(signal);
+ const t=outs[0].hourly.time,len=t.length,np=outs.length,sIdx=(ts-window.first)/36e5;
+ const ix=t.map((v,i)=>Date.parse(v+'Z')>=ts&&Date.parse(v+'Z')<=window.end?i:-1).filter(i=>i>=0);
  const M={nlx,nly,np,len,sIdx,sp,times:t,lat:la.map(Number),lon:lo.map(Number),elev:outs.map(o=>o.elevation||0),U:[],V:[],Ts:[],E:[],A:[],P:[],avg:{temp:[],wind:[],wdir:[],rh:[],rain:[]}};
  for(const o of outs){const h=o.hourly,el=o.elevation||0,U=new Float32Array(len),V=new Float32Array(len),Ts=new Float32Array(len),E=new Float32Array(len),A=new Float32Array(len),Pr=new Float32Array(len);
   for(let i=0;i<len;i++){const T=h.temperature_2m[i]??15,RH=h.relative_humidity_2m[i]??50,ws=h.wind_speed_10m[i]??0,th=(((h.wind_direction_10m[i]??0)+180)%360)*Math.PI/180;
@@ -456,7 +468,7 @@ const km=(G.e-G.w)*111.32*Math.cos((G.n+G.s)/2*Math.PI/180),kh=(G.n-G.s)*111.32;
    Pr[i]=h.precipitation[i]??0;let a=0;for(let k=0;k<=72&&i-k>=0;k++)a+=(h.precipitation[i-k]??0)*Math.exp(-k/48);A[i]=a}
   M.U.push(U);M.V.push(V);M.Ts.push(Ts);M.E.push(E);M.A.push(A);M.P.push(Pr)}
  for(let q=0;q<np;q++){const avg=a=>ix.reduce((sum,i)=>sum+a[i],0)/ix.length,u=avg(M.U[q]),v=avg(M.V[q]),T=avg(M.Ts[q])-.0065*(outs[q].elevation||0);M.avg.temp[q]=T;M.avg.wind[q]=Math.hypot(u,v);M.avg.wdir[q]=(Math.atan2(u,v)*180/Math.PI+360)%360;M.avg.rh[q]=clamp(100*avg(M.E[q])/esat(T),0,100);M.avg.rain[q]=avg(M.P[q])}M.meanIndices=ix;
- G.M=applyFieldWeather(M);W=null;WX_CACHE.set(cacheKey,M);if(WX_CACHE.size>12)WX_CACHE.delete(WX_CACHE.keys().next().value);note('OK',`Open-Meteo: ${np} points (${nlx}×${nly}, ${sp.toFixed(1)} km), ${len} hours ${t[0]} to ${t[len-1]}, start ${hrS}.`)}
+ G.M=applyFieldWeather(M);W=null;WX_CACHE.set(cacheKey,{M,expires:outs.expires});if(WX_CACHE.size>12)WX_CACHE.delete(WX_CACHE.keys().next().value);note('OK',`Open-Meteo: ${np} points (${nlx}×${nly}, ${sp.toFixed(1)} km), ${len} hours ${t[0]} to ${t[len-1]}, start ${hrS}.`)}
 
 /* ================= FIRMS fire detections ================= */
 function csvRows(text){const rows=[],row=[];let cell='',quoted=false;for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(quoted&&text[i+1]==='"'){cell+='"';i++}else quoted=!quoted}else if(c===','&&!quoted){row.push(cell);cell=''}else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&text[i+1]==='\n')i++;row.push(cell);if(row.some(Boolean))rows.push(row.splice(0));cell=''}else cell+=c}row.push(cell);if(row.some(Boolean))rows.push(row);return rows}
@@ -518,7 +530,7 @@ async function loadFire(p){const signal=DataIO.signal;const hind=p.mode==='hind'
 function eventRanges(){const days=Object.keys(HBY).sort(),gap=clamp(+$('gap').value||0,0,30),groups=[];for(const d of days){const last=groups.at(-1);if(last&&daysBetween(last.end,d)<=gap+1){last.end=d;last.days.push(d);last.n+=HBY[d].n}else groups.push({start:d,end:d,days:[d],n:HBY[d].n})}return groups}
 function selectedEvents(){return eventRanges().filter(g=>g.days.some(d=>SEL.has(d)))}
 function renderHist(){const groups=eventRanges(),tot=groups.reduce((n,g)=>n+g.n,0);$('hist').innerHTML=tot?`<b>${tot}</b> detections in <b>${groups.length}</b> event ranges (${LASTSRC||'loaded'}).<br><a href="#" data-all="1">${LANG==='hi'?'सभी चुनें':'Select all'}</a> · <a href="#" data-none="1">${LANG==='hi'?'चयन साफ़ करें':'Clear all'}</a><div class="dates">`+groups.map((g,i)=>`<div class="event"><b>${i+1}.</b><a href="#" data-r="${i}" class="${g.days.some(d=>SEL.has(d))?'sel':''}">${g.start}${g.end!==g.start?' – '+g.end:''} (${g.n})</a></div>`).join('')+'</div>'+`<b>${selectedEvents().length}</b> ${LANG==='hi'?'रेंज चुनी गई हैं।':'ranges selected.'}`:(LANG==='hi'?'इस क्षेत्र और अवधि में कोई डिटेक्शन नहीं मिला। तारीखें और FIRMS कुंजी जाँचें।':'No detections in this area and period. Check dates and the FIRMS key.')}
-function applySel(){if(!SEL.size)return;const groups=selectedEvents();if(!groups.length)return;if(MODE!=='hind')document.querySelector('.tabs button[data-m=hind]').click();$('hs').value=groups[0].start;$('hh').value=0;const hours=groups.reduce((sum,g)=>sum+(daysBetween(g.start,g.end)+1)*24,0);$('hours').value=hours;useFireDefaults(groups[0].start,groups.at(-1).end)}
+function applySel(){if(!SEL.size)return;const groups=selectedEvents();if(!groups.length)return;$('hs').value=groups[0].start;const first=HBY[groups[0].start]?.t;$('hh').value=Number.isFinite(first)?new Date(first).getUTCHours():0;if(MODE!=='hind')document.querySelector('.tabs button[data-m=hind]').click();const hours=groups.reduce((sum,g)=>sum+(daysBetween(g.start,g.end)+1)*24,0);$('hours').value=hours;useFireDefaults(groups[0].start,groups.at(-1).end)}
 function histMessage(t){$('hist').textContent=t;log(t)}
 $('hbtn').onclick=async()=>{const b=$('hbtn'),signal=DataIO.signal;try{if(!AOI)return histMessage('Draw an area on the map or load a GeoJSON area first.');const key=$('firms').value.trim();if(!key&&!FILEROWS&&!eeReady)return histMessage('Enter your NASA FIRMS map key under Accounts, or sign in to Earth Engine first.');b.disabled=true;saveKeys();histMessage('Loading fire detections…');
  const dA=$('fh0').value,dB=$('fh1').value,rows=FILEROWS||await getDetections(dA,dB,bboxStr(),key,true),bd=drawn.getBounds();DataIO.check(signal);clearHist();dropGrid();
@@ -527,7 +539,7 @@ $('hbtn').onclick=async()=>{const b=$('hbtn'),signal=DataIO.signal;try{if(!AOI)r
  HROWS=keep;if(FILEROWS)LASTSRC='CSV file';renderHist();$('firebox').open=true;log(`Fire history: ${keep.length} detections on ${Object.keys(HBY).length} dates.`)}catch(e){if(!signal.aborted)histMessage('Error: '+(e.message||e))}finally{if(!signal.aborted)b.disabled=false}};
 $('hist').onclick=e=>{const a=e.target.closest('a');if(!a)return;e.preventDefault();
  if(a.dataset.all)Object.keys(HBY).forEach(d=>SEL.add(d));else if(a.dataset.none)SEL.clear();else if(a.dataset.r){const g=eventRanges()[+a.dataset.r];if(!g)return;const on=g.days.some(d=>SEL.has(d));g.days.forEach(d=>on?SEL.delete(d):SEL.add(d))}else return;
- applySel();renderHist()};
+ applySel();clearPreview();dropGrid();renderHist()};
 
 /* ================= prepare ================= */
 function mkOverlays(){const{nx,ny,w,e,s,n}=G,mk=()=>{const c=document.createElement('canvas');c.width=nx;c.height=ny;return c},bb=[[s,w],[n,e]];
@@ -540,11 +552,12 @@ function prepSignature(p,weatherMethod=$('weathermethod').value){return JSON.str
  FIELD.weather,speciesNames(),weatherMethod,$('litter').checked,$('litterclass').value])}
 async function prepareData(retry=false){if(prepActive||running||calActive)return;const b=$('prep'),signal=DataIO.signal;try{
  if(!AOI){checklist([[false,'Area of interest missing','अध्ययन क्षेत्र नहीं मिला']]);return log('Draw or load an area first.')}
+ if(!retry){if(MODE!=='hind')liveStart=Date.now()+(MODE==='fore'?2*36e5:0);syncTemporal()}
  const p=P(),key=prepSignature(p),resume=!!(retry&&prepCheckpoint?.key===key&&G&&G===prepCheckpoint.grid);
  if(retry&&!resume){$('retryprep').hidden=true;DATA_READY=false;$('run').disabled=true;return log('Settings or area changed. Press Prepare data; only matching cached requests will be reused.')}
  b.disabled=true;$('retryprep').disabled=true;$('run').disabled=true;DATA_READY=false;
  if(!resume){PREP_CACHE.clear();prepCheckpoint={key,grid:null,results:{}}}
- prepStart(resume);saveKeys();EVENTS=selectedEvents();if(p.mode==='hind'&&!EVENTS.length)throw Error('Select at least one fire-history range first.');
+ prepStart(resume);saveKeys();EVENTS=selectedEvents();
  if(!resume){BASE=CAL=CANDIDATE=null;SEARCH=[];REFS=[];$('val').innerHTML='';$('comparison').innerHTML='';$('obsstatus').textContent='';$('candidateTable').innerHTML='';$('paramCompare').innerHTML='';$('calEvents').innerHTML='';clearPreview();dropGrid(true);const bb=drawn.getBounds();
  build({w:bb.getWest(),e:bb.getEast(),s:bb.getSouth(),n:bb.getNorth()},p,AOI);mkOverlays();prepCheckpoint.grid=G;prepStage('area','done',`${G.nx} × ${G.ny} · ${G.N.toLocaleString()} cells`)}
  const stage=async(key,detail,work,state,summary)=>{
@@ -652,7 +665,7 @@ function charts(){CH.forEach(c=>c&&c.destroy());Chart.defaults.color='#c9b8b0';C
 function clearHist(){hdots.clearLayers();HROWS=null;HBY={};SEL.clear();SKIPN=0;const h=$('hist');if(h)h.innerHTML=''}
 $('reset').onclick=()=>{DataIO.reset();$('run').textContent=bilingual('Run baseline simulation','मूल सिमुलेशन चलाएँ');prepActive=false;$('prep').disabled=false;$('retryprep').disabled=false;$('hbtn').disabled=false;$('previewcure').disabled=false;prepCheckpoint=null;PREP_CACHE.clear();$('retryprep').hidden=true;running=false;videoGeneration++;if(rec&&rec.state!=='inactive')try{rec.stop()}catch(e){note('ERR','Video stop on reset: '+e.message)}rec=null;if(CALWORKER){CALWORKER.terminate();CALWORKER=null;CALCANCEL?.();CALCANCEL=null}clearPreview();dropGrid();drawn.clearLayers();AOI=null;localStorage.removeItem('wf_aoi');clearHist();dots.clearLayers();H=null;EVENTS=[];METRICS=[];RUNS=[];PROB=null;BASE=CAL=CANDIDATE=null;SEARCH=[];REFS=[];FILEROWS=null;USER_LINES=null;BARRIER_SKIP=false;W=null;WX_CACHE.clear();$('aoifile').value='';$('barrierfile').value='';$('barrierstatus').textContent=bilingual('If online geometry is unavailable, supply road/river LineString GeoJSON here.','ऑनलाइन geometry उपलब्ध न हो तो सड़क/नदी LineString GeoJSON यहाँ दें।');$('firmsfile').value='';clearFieldInputs();
  for(const id of ['sensor','gap','hiconf','ww0','ww1','dw0','dw1','wsp','noee','dt','r0','tb','seedr','look','ignmode','moistScale','rainScale','usebi','bxsel','bthr','pre','post','tol','runs','lop','lyr','calbudget','calrepeats','calruns','customruns']){const e=$(id);if(e.type==='checkbox')e.checked=e.defaultChecked;else e.value=e.tagName==='SELECT'?([...e.options].find(o=>o.defaultSelected)||e.options[0]).value:e.defaultValue}
- for(const id of ['nm0','nm1','wi0','wi1','lst0','lst1','met0','met1'])$(id).value='';$('cell').value='30';$('fh1').value=isoD(Date.now());$('fh0').value=addD($('fh1').value,-365);$('hs').value='2026-04-10';$('hh').value='0';$('hours').value='12';document.querySelectorAll('.firesrc').forEach((x,i)=>x.checked=i===0);
+ for(const id of ['nm0','nm1','wi0','wi1','lst0','lst1','met0','met1'])$(id).value='';$('cell').value='30';$('fh1').value=isoD(Date.now());$('fh0').value=addD($('fh1').value,-365);$('hs').value='2026-04-10';temporalAnchor=$('hs').value;$('hh').value='0';$('hours').value='12';document.querySelectorAll('.firesrc').forEach((x,i)=>x.checked=i===0);
  $('dem').value='cop';$('curethr').value='0.10';$('curevalue').textContent='0.10';document.querySelectorAll('#weights input').forEach(e=>e.value=e.defaultValue);prepActive=false;prepStates={};prepCurrent='';$('prepsteps').replaceChildren();$('prepstatus').textContent='';$('prepprogress').value=0;
  document.querySelector('.tabs button[data-m=now]').click();$('hist').textContent='';$('checklist').textContent='';for(const id of ['val','comparison','candidateTable','paramCompare','calEvents','obsstatus','calstatus','finalstatus','loadprogress','calLive','holdoutComparison','decision'])$(id).innerHTML='';$('calprogress').value=0;$('tunerows').innerHTML='';renderTune();OPTRESULT=HOLDRESULT=null;OPTELIGIBLE=false;$('acceptcal').disabled=true;updatePlan();$('stopcal').hidden=true;$('autocal').disabled=false;$('legend').textContent='';VIDEO={baseline:null,calibrated:null};for(const id of ['basevideo','calvideo'])$(id).hidden=true;$('videostatus').textContent=bilingual('After a run finishes, its video will be available here.','रन पूरा होने पर उसकी वीडियो यहाँ डाउनलोड की जा सकती है।');CH.forEach(c=>c?.destroy());CH=[];EXCH.forEach(c=>c?.destroy());EXCH=[];document.querySelectorAll('#resultsbox canvas').forEach(c=>c.getContext('2d').clearRect(0,0,c.width,c.height));
  document.querySelectorAll('aside details').forEach(d=>d.open=false);$('areabox').open=true;log('Reset complete. API keys and sign-in retained; draw or load an area to start again.')}
@@ -663,9 +676,9 @@ function record(tm){let cx=G.nx/2,cy=G.ny/2;if(G.act.length){let sx=0,sy=0;for(c
  const ci=clamp(Math.round(cy),0,G.ny-1)*G.nx+clamp(Math.round(cx),0,G.nx-1);wxAt(cx,cy,G.z[ci]);const a=G.cell*G.cell/1e6;
  H.t.push(+(tm/60).toFixed(3));H.area.push(+((G.nBurnt+G.act.length)*a).toFixed(3));H.act.push(+(G.act.length*a).toFixed(3));H.ws.push(+wV.toFixed(1));H.wd.push(Math.round(wDir));H.T.push(+wT.toFixed(1));H.RH.push(Math.round(wRH))}
 async function simulateEvents(p,display,selectedGroups=EVENTS){const signal=DataIO.signal;const groups=selectedGroups.length?selectedGroups:[{start:isoD(startMs(p)),end:isoD(startMs(p)+p.hours*36e5)}],allSeeds=G.seedSpec.slice(),union=new Uint8Array(G.N),eventMasks=[],originalM=G.M;let elapsed=0;
- for(let e=0;e<groups.length&&running;e++){const ev=groups[e],hours=Math.min(p.hours,(daysBetween(ev.start,ev.end)+1)*24),begin=selectedGroups.length?Date.parse(ev.start+'T00:00:00Z'):startMs(p);
+ for(let e=0;e<groups.length&&running;e++){const ev=groups[e],hours=Math.min(p.hours,(daysBetween(ev.start,ev.end)+1)*24),begin=selectedGroups.length?eventStart(ev,p):startMs(p);
   G.seedSpec=selectedGroups.length?allSeeds.filter(o=>o.date>=ev.start&&o.date<=ev.end):allSeeds;resetState(p.seedR);G.tbs=Math.max(1,Math.round(p.tb/p.dt));G.tbMax=G.tbs*3;
-  for(let offset=0;offset<hours&&running;offset+=240){const part=Math.min(240,hours-offset),q={...p,start:begin+offset*36e5,hours:part,met0:isoD(begin+offset*36e5),met1:isoD(begin+(offset+part)*36e5)};
+  for(let offset=0;offset<hours&&running;offset+=240){const part=Math.min(240,hours-offset),q={...p,weatherStart:begin,start:begin+offset*36e5,hours:part,met0:isoD(begin+offset*36e5),met1:isoD(begin+(offset+part)*36e5)};
    await loadMet(q);DataIO.check(signal);for(let k=0,n=Math.ceil(part*60/p.dt);k<n&&running;k++){step(q,k*p.dt);const tm=elapsed*60+k*p.dt+p.dt;
     if(display&&((k+1)%Math.max(1,Math.round(10/p.dt))===0||k===n-1||!G.act.length)){drawFrame();vframe(tm);record(tm);log(`Event ${e+1}/${groups.length}, t + ${(tm/60).toFixed(1)} h: ${G.nBurnt+G.act.length} burnt/burning cells.`);await(rec?sleep(60):raf());DataIO.check(signal)}
     if(!G.act.length)break}elapsed+=part}
@@ -720,7 +733,7 @@ function search(m){G=m.grid;G.state=new Uint8Array(G.N);G.age=new Uint16Array(G.
  for(const row of history)progress(row,'benchmark');const broadEnd=Math.max(3,Math.ceil(planned*.55));for(let n=3;n<planned;n++){let p,attempt=0;do{p=n<broadEnd?broad(n+attempt*planned):refine(n+attempt*planned)}while(seen.has(signature(p))&&++attempt<30);if(seen.has(signature(p))){const k=keys[n%keys.length],[lo,hi]=bounds[k];p[k]=clamp(p[k]+(hi-lo)*1e-7*(n+1),lo,hi)}seen.add(signature(p));const t=performance.now(),result=evaluate(p,train),row={kind:n<broadEnd?'broad':'refine',params:p,metrics:result,score:result.score,elapsedMs:performance.now()-t};history.push(row);if(row.score>best.score)best=row;top.push(row);top.sort((a,b)=>b.score-a.score);top.length=Math.min(top.length,5);progress(row,row.kind)}
  const chosen=[first,...history.filter(x=>x!==first).sort((a,b)=>b.score-a.score).slice(0,finalists-1)],extra=Math.max(0,repeats-1);for(const row of chosen){let sum=row.score;for(let r=1;r<=extra;r++){const t=performance.now(),result=evaluate(row.params,train,1,r),item={kind:'repeat',params:row.params,metrics:result,score:result.score,elapsedMs:performance.now()-t};sum+=result.score;history.push(item);progress(item,'repeat')}row.repeatScore=sum/repeats}chosen.sort((a,b)=>b.repeatScore-a.repeatScore);best=chosen[0];const trainBefore=first.metrics,trainAfter=best.metrics;postMessage({type:'optimized',best:best.params,history,trainBefore,trainAfter,baseScore:first.repeatScore,bestScore:best.repeatScore,planned,total,meanMs,holdout})}
 onmessage=e=>{try{const m=e.data;if(m.type==='search')search(m);else if(m.type==='validate'){if(holdout<0){postMessage({type:'validated',holdout:-1});return}const before=evaluate(m.baseline,[holdout],repeats),after=evaluate(m.best,[holdout],repeats);postMessage({type:'validated',holdout,before,after})}}catch(err){postMessage({type:'error',message:err.message,stack:err.stack})}};`}
-async function calibrationInputs(p){const grid=G,signal=DataIO.signal,oldM=G.M,all=G.seedSpec.slice(),events=[];try{for(let j=0;j<EVENTS.length;j++){if(CALSTOP)throw Error('Calibration stopped.');const ev=EVENTS[j];$('calstatus').textContent=bilingual(`Loading reference and weather ${j+1}/${EVENTS.length}…`,`संदर्भ और मौसम ${j+1}/${EVENTS.length} लोड हो रहा है…`);const bx=await eventReference(ev,p);DataIO.check(signal);const ref=new Uint8Array(G.N),valid=new Uint8Array(G.N),thr=(+$('bthr').value||.1)*1e4;let positive=0,negative=0;for(let i=0;i<G.N;i++)if(G.inside[i]&&!G.water[i]&&!NF[G.lc[i]]&&bx[i]!==MISSING){valid[i]=1;ref[i]=Number(bx[i]>thr);ref[i]?positive++:negative++}if(!positive||!negative)throw Error(`Event ${j+1}: reference needs both burnt and unburnt valid cells (found ${positive}/${negative}).`);const parts=[],hours=Math.min(p.hours,(daysBetween(ev.start,ev.end)+1)*24),begin=Date.parse(ev.start+'T00:00:00Z');for(let offset=0;offset<hours;offset+=240){const duration=Math.min(240,hours-offset),q={...p,start:begin+offset*36e5,hours:duration,met0:isoD(begin+offset*36e5),met1:isoD(begin+(offset+duration)*36e5)};await loadMet(q);DataIO.check(signal);parts.push({hours:duration,M:G.M})}events.push({ref,valid,seeds:all.filter(o=>o.date>=ev.start&&o.date<=ev.end),parts,bx})}return events}finally{if(!signal.aborted&&G===grid){G.M=oldM;W=null}}}
+async function calibrationInputs(p){const grid=G,signal=DataIO.signal,oldM=G.M,all=G.seedSpec.slice(),events=[];try{for(let j=0;j<EVENTS.length;j++){if(CALSTOP)throw Error('Calibration stopped.');const ev=EVENTS[j];$('calstatus').textContent=bilingual(`Loading reference and weather ${j+1}/${EVENTS.length}…`,`संदर्भ और मौसम ${j+1}/${EVENTS.length} लोड हो रहा है…`);const bx=await eventReference(ev,p);DataIO.check(signal);const ref=new Uint8Array(G.N),valid=new Uint8Array(G.N),thr=(+$('bthr').value||.1)*1e4;let positive=0,negative=0;for(let i=0;i<G.N;i++)if(G.inside[i]&&!G.water[i]&&!NF[G.lc[i]]&&bx[i]!==MISSING){valid[i]=1;ref[i]=Number(bx[i]>thr);ref[i]?positive++:negative++}if(!positive||!negative)throw Error(`Event ${j+1}: reference needs both burnt and unburnt valid cells (found ${positive}/${negative}).`);const parts=[],hours=Math.min(p.hours,(daysBetween(ev.start,ev.end)+1)*24),begin=eventStart(ev,p);for(let offset=0;offset<hours;offset+=240){const duration=Math.min(240,hours-offset),q={...p,weatherStart:begin,start:begin+offset*36e5,hours:duration,met0:isoD(begin+offset*36e5),met1:isoD(begin+(offset+duration)*36e5)};await loadMet(q);DataIO.check(signal);parts.push({hours:duration,M:G.M})}events.push({ref,valid,seeds:all.filter(o=>o.date>=ev.start&&o.date<=ev.end),parts,bx})}return events}finally{if(!signal.aborted&&G===grid){G.M=oldM;W=null}}}
 function paramTable(base,best){$('paramCompare').innerHTML=`<table><tr><th>${bilingual('Parameter','पैरामीटर')}</th><th>${bilingual('Baseline','मूल')}</th><th>${bilingual('Proposed','प्रस्तावित')}</th></tr>${PARAMS.filter(([k])=>base[k]!==best[k]).map(([k,en,hi])=>`<tr><td>${bilingual(en,hi)}</td><td>${base[k].toFixed(3)}</td><td>${best[k].toFixed(3)}</td></tr>`).join('')}</table>`}
 const DEPTH_RUNS={quick:24,standard:72,deep:144};
 const runtimeText=ms=>ms<60000?`${Math.max(1,Math.ceil(ms/1000))} s`:ms<36e5?`${Math.ceil(ms/60000)} min`:ms<864e5?`${(ms/36e5).toFixed(1)} h`:`${(ms/864e5).toFixed(1)} days`;
@@ -762,4 +775,8 @@ function stratifiedPoints(ref,valid,count=100){const groups=[[],[]],spacing=Math
  for(const i of candidates){const x=i%G.nx,y=Math.floor(i/G.nx),q=ref[i]?1:0;if(groups[q].length>=count)continue;const cx=Math.floor(x/spacing),cy=Math.floor(y/spacing),key=`${cx},${cy}`;if(occupied.has(key))continue;groups[q].push(i);occupied.add(key);if(groups[0].length>=count&&groups[1].length>=count)break}return groups}
 function installLanguage(){const apply=()=>{document.documentElement.lang=LANG==='hi'?'hi':'en';document.querySelectorAll('[data-hi]').forEach(e=>{if(!e.dataset.en)e.dataset.en=e.textContent;e.textContent=LANG==='hi'?e.dataset.hi:e.dataset.en});$('lang').textContent=LANG==='hi'?'English':'हिन्दी';if(HROWS)renderHist();if($('tunerows')?.children.length)renderTune();if(EVENTS.length&&$('holdout'))renderCalibrationEvents();if(Object.keys(prepStates).length)renderPrep()};$('lang').onclick=()=>{LANG=LANG==='en'?'hi':'en';apply()};apply();if(!$('firms').value&&!eeReady){$('accounts').open=true;$('modebox').open=false}else{$('accounts').open=false;$('modebox').open=true}}
 installLanguage();
+syncTemporal();
+for(const id of ['hs','hh'])$(id).addEventListener('change',()=>{SEL.clear();EVENTS=[];syncTemporal();clearPreview();dropGrid();if(HROWS)renderHist()});
+$('hours').addEventListener('change',()=>{syncTemporal();if(prepActive||running||calActive||$('usebi').checked&&!EVENTS.length)dropGrid()});
+for(const id of ['nm0','nm1','wi0','wi1','met0','met1','pre','post','usebi','bxsel'])$(id).addEventListener('change',()=>{if(id==='met0'||id==='met1')syncTemporal();clearPreview();dropGrid()});
 document.querySelectorAll('aside details').forEach(d=>d.addEventListener('toggle',()=>{if(d.open)document.querySelectorAll('aside details').forEach(other=>{if(other!==d)other.open=false})}));

@@ -10,9 +10,9 @@ const DataIO=(()=>{
  });return dbPromise}
  api.cache=async(method,key,value)=>{
   if(method==='clear')memory.clear();if(method==='put')memory.set(key,value);if(method==='get'&&memory.has(key))return memory.get(key);
-  const db=await database();if(!db)return method==='put'?value:undefined;
+  const db=await database();if(!db)return method==='put'?value:method==='keys'?[...memory.keys()]:undefined;
   return new Promise(resolve=>{let result,done=false,tx;const finish=v=>{if(done)return;done=true;clearTimeout(timer);resolve(v)},timer=setTimeout(()=>{warning();try{tx?.abort()}catch(e){}finish(method==='put'?value:undefined)},5000);
-   try{tx=db.transaction('c',method==='get'?'readonly':'readwrite');const store=tx.objectStore('c'),q=method==='get'?store.get(key):method==='put'?store.put(value,key):store.clear();q.onsuccess=()=>{result=q.result};tx.oncomplete=()=>{if(method==='get'&&result!==undefined)memory.set(key,result);finish(method==='put'?value:result)};tx.onerror=tx.onabort=()=>{warning();finish(method==='put'?value:undefined)}}catch(e){warning();finish(method==='put'?value:undefined)}
+   try{tx=db.transaction('c',method==='get'||method==='keys'?'readonly':'readwrite');const store=tx.objectStore('c'),q=method==='keys'?store.getAllKeys():method==='get'?store.get(key):method==='put'?store.put(value,key):store.clear();q.onsuccess=()=>{result=q.result};tx.oncomplete=()=>{if(method==='get'&&result!==undefined)memory.set(key,result);finish(method==='put'?value:method==='keys'?[...new Set([...memory.keys(),...result])]:result)};tx.onerror=tx.onabort=()=>{warning();finish(method==='put'?value:undefined)}}catch(e){warning();finish(method==='put'?value:undefined)}
   })
  };
  api.wait=(promise,signal=controller.signal,ms=0)=>new Promise((resolve,reject)=>{
