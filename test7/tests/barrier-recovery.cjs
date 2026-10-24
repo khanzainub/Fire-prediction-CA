@@ -1,7 +1,7 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
 const s=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
 const c=vm.createContext({console,Uint8Array});
-vm.runInContext(`var USER_LINES=null,BARRIER_SKIP=false,prepActive=false,running=false,calActive=false,called=0,dropped=0;var G={lineBarrier:new Uint8Array([1,0]),satellite:'retained'},prepStates={satellite:{state:'done'},barriers:{state:'failed'}},prepCheckpoint={grid:G,key:'original',results:{satellite:'retained'}};function P(){return {}};function prepSignature(){return BARRIER_SKIP?'skip':USER_LINES?'upload':'original'};function prepareData(retry){called++;if(!retry)throw Error('Must resume')};function dropGrid(){dropped++};function log(){};function note(){};`,c);
+vm.runInContext(`var USER_LINES=null,BARRIER_SKIP=false,prepActive=false,running=false,calActive=false,called=0,dropped=0;var G={lineBarrier:new Uint8Array([1,0]),satellite:'retained'},prepStates={satellite:{state:'done'},barriers:{state:'failed'}},prepCheckpoint={grid:G,key:'original',results:{satellite:'retained'}};function $(id){return {hidden:false}}function P(){return {}};function prepSignature(){return BARRIER_SKIP?'skip':USER_LINES?'upload':'original'};function prepareData(retry){called++;if(!retry)throw Error('Must resume')};function workflowChanged(){prepCheckpoint.key=prepSignature();prepStates.barriers={state:'waiting'};delete prepCheckpoint.results.barriers}function dropGrid(){dropped++};function log(){};function note(){};`,c);
 vm.runInContext(s.slice(s.indexOf('function chooseBarriers('),s.indexOf('function barrierGeoJSON(')),c);
 vm.runInContext(s.slice(s.indexOf('function barrierGeoJSON('),s.indexOf("$('barrierfile').onchange=")),c);
 vm.runInContext("chooseBarriers(null,true)",c);
@@ -11,5 +11,5 @@ vm.runInContext(s.slice(s.indexOf('async function loadLinearBarriers('),s.indexO
 vm.runInContext(`var lines=barrierGeoJSON({type:'Feature',properties:{waterway:'river'},geometry:{type:'LineString',coordinates:[[79.44,29.38],[79.45,29.39]]}});chooseBarriers(lines)`,c);
 assert.equal(c.called,2);assert.equal(c.dropped,0);assert.equal(c.USER_LINES[0].kind,'river');assert.equal(c.BARRIER_SKIP,false);assert.equal(c.G.satellite,'retained');
 assert.throws(()=>vm.runInContext("barrierGeoJSON({type:'Point',coordinates:[0,0]})",c),/No LineString/);
-vm.runInContext("prepCheckpoint.key='different settings';chooseBarriers(null,true)",c);assert.equal(c.dropped,1);assert.equal(c.called,2);
-console.log('PASS skip, GeoJSON recovery, satellite retention, invalid upload rejection, and settings mismatch');})().catch(e=>{console.error(e);process.exitCode=1});
+vm.runInContext("prepCheckpoint.key='different settings';chooseBarriers(null,true)",c);assert.equal(c.dropped,0);assert.equal(c.called,3);assert.equal(c.G.satellite,'retained');
+console.log('PASS skip, GeoJSON recovery, satellite retention, invalid upload rejection, and settings changes preserve unrelated data');})().catch(e=>{console.error(e);process.exitCode=1});

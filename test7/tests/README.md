@@ -45,3 +45,27 @@ historical gap can return other hours in that same day. Valid cached hours are
 kept. Missing optional history beyond the chosen run is logged and does not
 block a run whose required weather is complete. Missing required weather
 always blocks the run; no replacement weather is generated.
+
+## Dependency-aware preparation and ignition selection
+
+```sh
+node test7/tests/data-workflow.cjs
+node test7/tests/satellite-dependencies.cjs
+npm install --prefix /tmp/fire-workflow-test jsdom
+JSDOM_MODULE=/tmp/fire-workflow-test/node_modules/jsdom node test7/tests/workflow-dom.cjs
+```
+
+These checks exercise the production preparation scheduler, selection renderer,
+weather loader, baseline runner and CA equations with controlled test responses.
+They cover independent failure/recovery, selected versus unselected detections,
+manual ignition reruns, changed ignition years, shorter-run cache reuse, replacing
+barrier geometry, cancellation during retrieval, reset confirmation/cancellation,
+resetting late responses, legacy satellite-cache migration, and per-band satellite
+dependencies. The DOM test boots every application script and exercises actual
+mode, event, date, duration, language and reset controls in jsdom. It does not
+claim a live Earth Engine run or replace visual/device testing.
+
+Reset now intentionally clears workflow data and the downloaded cache after
+confirmation, retaining account settings. Rerun Baseline Simulation preserves
+valid prepared data and does not invoke optimization. Dataset edits retain
+unaffected stage results; model-only changes do not invalidate downloads.

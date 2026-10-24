@@ -17,15 +17,16 @@ const checklist=(rows)=>{$('checklist').innerHTML=rows.map(([ok,en,hi])=>`<div c
 const PREP_STAGES=[['area','Area','क्षेत्र'],['satellite','Satellite & terrain','उपग्रह और भूभाग'],['barriers','Roads & rivers','सड़कें और नदियाँ'],['weather','Weather','मौसम'],['field','Optional field data','वैकल्पिक फील्ड डेटा'],['fire','Fire detections','अग्नि पहचान']];
 let prepActive=false,prepCurrent='',prepStarted=0,prepStates={},prepCheckpoint=null;
 const PREP_CACHE=new Map();
-function renderPrep(){const target=$('prepsteps');target.replaceChildren();let complete=0,partial=0;for(const [key,en,hi] of PREP_STAGES){const s=prepStates[key]||{state:'waiting',detail:'',fraction:0},row=document.createElement('div'),icon=document.createElement('b'),body=document.createElement('span');row.className='prep-step '+s.state;icon.textContent=({done:'✔',warn:'!',failed:'✖',active:'◌',waiting:'·'})[s.state];body.textContent=bilingual(en,hi);if(s.detail){const detail=document.createElement('small');detail.textContent=s.detail;body.append(detail)}row.append(icon,body);if(s.state==='failed'){
- const retry=document.createElement('button');retry.type='button';retry.className='prep-retry';retry.textContent=bilingual('↻ Retry','↻ पुनः प्रयास');retry.setAttribute('aria-label',bilingual('Retry failed data: '+en,'असफल डेटा पुनः प्रयास: '+hi));retry.title=bilingual('Retry this failed step; completed data is kept.','केवल इस असफल चरण का पुनः प्रयास; पूरा डेटा सुरक्षित रहेगा।');retry.disabled=prepActive||running||!G||G!==prepCheckpoint?.grid;retry.onclick=()=>prepareData(true);row.append(retry);
+let DETECTIONS=[],POINT_SEL=new Set(),MANUAL_IGNITIONS=[],workflowTimer=null,workflowInitialized=false,baselineHasRun=false;
+function renderPrep(){const target=$('prepsteps');target.replaceChildren();let complete=0,partial=0;for(const [key,en,hi] of PREP_STAGES){const s=prepStates[key]||{state:'waiting',detail:'',fraction:0},row=document.createElement('div'),icon=document.createElement('b'),body=document.createElement('span');row.className='prep-step '+s.state;icon.textContent=({done:'✔',warn:'!',failed:'✖',active:'◌',waiting:'·'})[s.state];body.textContent=bilingual(en,hi);if(s.detail){const detail=document.createElement('small');detail.textContent=s.detail;body.append(detail)}row.append(icon,body);if(['failed','waiting'].includes(s.state)&&key!=='area'){
+ const retry=document.createElement('button');retry.type='button';retry.className='prep-retry';retry.textContent=bilingual('↻ Retry','↻ पुनः प्रयास');retry.setAttribute('aria-label',bilingual('Retry failed data: '+en,'असफल डेटा पुनः प्रयास: '+hi));retry.title=bilingual('Retry this failed step; completed data is kept.','केवल इस असफल चरण का पुनः प्रयास; पूरा डेटा सुरक्षित रहेगा।');retry.disabled=prepActive||running||calActive||!G||G!==prepCheckpoint?.grid;retry.onclick=()=>prepareData(true,key);row.append(retry);
  if(key==='barriers'){
   const actions=document.createElement('div');actions.className='barrier-actions';
   const upload=document.createElement('button');upload.type='button';upload.textContent=bilingual('Upload GeoJSON','GeoJSON अपलोड');upload.disabled=retry.disabled;upload.onclick=()=>$('barrierfile').click();
   const skip=document.createElement('button');skip.type='button';skip.textContent=bilingual('Skip roads & rivers','सड़कें और नदियाँ छोड़ें');skip.disabled=retry.disabled;skip.onclick=()=>chooseBarriers(null,true);
   const help=document.createElement('small');help.textContent=bilingual('Skip continues without road/river line barriers. Completed data is kept.','छोड़ने पर सड़क/नदी के रेखीय अवरोध लागू नहीं होंगे। पूरा डेटा सुरक्षित है।');actions.append(upload,skip,help);row.append(actions)
  }
- }target.append(row);if(s.state==='done'||s.state==='warn')complete++;else if(s.state==='active')partial=clamp(s.fraction||0,0,.99)}$('prepprogress').value=Math.round((complete+partial)/PREP_STAGES.length*100);const state=prepStates[prepCurrent];$('prepstatus').textContent=prepActive?`${bilingual('Preparing data','डेटा तैयार हो रहा है')} · ${$('prepprogress').value}% · ${Math.round((Date.now()-prepStarted)/1000)} s${state?.detail?' · '+state.detail:''}`:state?.state==='failed'?bilingual('Tap ↻ Retry beside the failed step. Completed data is kept.','असफल चरण के सामने ↻ पुनः प्रयास दबाएँ। पूरा डेटा सुरक्षित है।'):complete===PREP_STAGES.length?bilingual('Data ready. All preparation steps completed.','डेटा तैयार। सभी चरण पूरे हुए।'):''}
+ }target.append(row);if(s.state==='done'||s.state==='warn')complete++;else if(s.state==='active')partial=clamp(s.fraction||0,0,.99)}$('prepprogress').value=Math.round((complete+partial)/PREP_STAGES.length*100);const state=prepStates[prepCurrent];$('prepstatus').textContent=prepActive?`${bilingual('Preparing data','डेटा तैयार हो रहा है')} · ${$('prepprogress').value}% · ${Math.round((Date.now()-prepStarted)/1000)} s${state?.detail?' · '+state.detail:''}`:Object.values(prepStates).some(s=>s.state==='failed'||s.state==='waiting')?bilingual('Tap ↻ Retry beside the failed step. Completed data is kept.','असफल चरण के सामने ↻ पुनः प्रयास दबाएँ। पूरा डेटा सुरक्षित है।'):complete===PREP_STAGES.length?bilingual('Data ready. All preparation steps completed.','डेटा तैयार। सभी चरण पूरे हुए।'):''}
 function prepStage(key,state,detail='',fraction=0){if(!prepActive)return;prepCurrent=key;prepStates[key]={state,detail,fraction};renderPrep()}
 function prepStart(resume=false){prepActive=true;prepStarted=Date.now();prepCurrent='area';$('checklist').replaceChildren();if(!resume)prepStates=Object.fromEntries(PREP_STAGES.map(([k])=>[k,{state:'waiting',detail:'',fraction:0}]));if(!resume)prepStage('area','active','Checking area…');else renderPrep()}
 function prepStop(){prepActive=false;renderPrep()}
@@ -78,13 +79,13 @@ $('aoisave').onclick=()=>{if(!AOI)return log('Draw an area first.');const a=docu
  a.href=URL.createObjectURL(new Blob([JSON.stringify({type:'MultiPolygon',coordinates:AOI})],{type:'application/json'}));a.download='aoi.geojson';a.click()};
 let USER_LINES=null,BARRIER_SKIP=false;
 function chooseBarriers(ways,skip=false){
- const resume=!prepActive&&!running&&G&&G===prepCheckpoint?.grid&&prepSignature(P())===prepCheckpoint.key;
- if(prepActive||running||calActive)return log("Stop the current operation before changing road/river data.");
- USER_LINES=ways;BARRIER_SKIP=skip;
- if(resume){G.lineBarrier.fill(0);prepStates.barriers={state:"waiting",detail:"",fraction:0};delete prepCheckpoint.results.barriers;prepCheckpoint.key=prepSignature(P());return prepareData(true)}
- dropGrid();log("Road/river source updated. Press Prepare data; matching downloaded data will be reused.");
+ if(running||calActive)return log('Stop the current operation before changing road/river data.');
+ USER_LINES=ways;BARRIER_SKIP=skip;$('barrieronlinereset').hidden=!ways&&!skip;workflowChanged();
+ if(G)return prepareData(true,'barriers');
+ log('Road/river source updated. Prepare data to integrate it.');
 }
 
+$('barrieronlinereset').onclick=()=>chooseBarriers(null,false);
 function barrierGeoJSON(gj){const ways=[];let vertices=0;
  const add=(g,kind)=>{if(!g)return;if(g.type==='GeometryCollection'){(g.geometries||[]).forEach(v=>add(v,kind));return}
   const lines=g.type==='LineString'?[g.coordinates]:g.type==='MultiLineString'?g.coordinates:[];
@@ -100,13 +101,13 @@ const KEYS=['firms','client','project','cartokey','ohsomekey'];
 KEYS.forEach(k=>{const v=localStorage.getItem('wf_'+k);if(v)$(k).value=v});
 const saveKeys=()=>KEYS.forEach(k=>$('remember').checked?localStorage.setItem('wf_'+k,$(k).value.trim()):localStorage.removeItem('wf_'+k));
 $('savesettings').onclick=async()=>{saveKeys();await updateCarto();if(!$('cartokey').value.trim())$('settingsstatus').textContent=bilingual($('remember').checked?'Settings saved in this browser.':'Settings applied for this visit; browser storage is off.',$('remember').checked?'सेटिंग इस ब्राउज़र में सहेजी गईं।':'इस बार के लिए सेटिंग लागू; ब्राउज़र में सहेजना बंद है।');$('accounts').open=false};updateCarto();
-let temporalAnchor=$('hs').value,liveStart=Date.now();
+let temporalAnchor=$('hs').value,liveStart=Date.now(),seasonTemplates={};
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{MODE=b.dataset.m;document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x===b));
- $('hindbox').hidden=MODE!=='hind';if(MODE!=='hind'){SEL.clear();EVENTS=[];if(HROWS)renderHist()}liveStart=Date.now()+(MODE==='fore'?2*36e5:0);if(!SEL.size)$('hours').value={now:2,fore:22,hind:24}[MODE];if(MODE==='hind')$('usebi').checked=true;syncTemporal();clearPreview();dropGrid()});
-$('sensor').onchange=()=>{$('cell').value=$('sensor').value==='s2'?10:30;dropGrid()};
+ $('hindbox').hidden=MODE!=='hind';if(MODE!=='hind'){POINT_SEL.clear();SEL.clear();EVENTS=[];renderDetections();if(HROWS)renderHist()}liveStart=Date.now()+(MODE==='fore'?2*36e5:0);if(!SEL.size)$('hours').value={now:2,fore:22,hind:24}[MODE];if(MODE==='hind')$('usebi').checked=true;syncTemporal();clearPreview();workflowChanged()});
+
 $('fh1').value=new Date().toISOString().slice(0,10);$('fh0').value=addD($('fh1').value,-365);
 function chosenSources(){return [...document.querySelectorAll('.firesrc:checked')].map(x=>x.value)}
-$('gap').onchange=()=>renderHist();$('sensor').onchange=()=>{$('cell').value=$('sensor').value==='s2'?10:30;clearPreview();dropGrid()};$('dem').onchange=dropGrid;
+$('gap').onchange=()=>{applySel();renderHist();workflowChanged()};$('sensor').onchange=()=>{$('cell').value=$('sensor').value==='s2'?10:30;clearPreview();workflowChanged()};$('dem').onchange=()=>workflowChanged();
 function useFireDefaults(a,b){syncTemporal(a)}
 function syncTemporal(anchor){
  const start=MODE==='hind'?Date.parse($('hs').value+'T'+String(clamp(+$('hh').value||0,0,23)).padStart(2,'0')+':00:00Z'):liveStart;
@@ -115,7 +116,7 @@ function syncTemporal(anchor){
  for(const [lo,hi,from,to] of [['nm0','nm1',-30,-1],['wi0','wi1',-30,-1],['lst0','lst1',-45,-1]]){
   if(!$(lo).value)$(lo).value=addD(temporalAnchor,from);if(!$(hi).value)$(hi).value=addD(temporalAnchor,to);
  }
- for(const id of ['ww0','ww1','dw0','dw1'])$(id).value=TemporalSync.shift($(id).value,temporalAnchor,anchor);
+ for(const id of ['ww0','ww1','dw0','dw1']){let t=seasonTemplates[id];if(!t||$(id).value!==t.last)t=seasonTemplates[id]={value:$(id).value,anchor:temporalAnchor};$(id).value=t.last=TemporalSync.shift(t.value,t.anchor,anchor);}
  for(const id of ['nm0','nm1','wi0','wi1','lst0','lst1'])$(id).value=addD(anchor,daysBetween(temporalAnchor,$(id).value));
  temporalAnchor=anchor;
  const max=MODE==='now'?2:MODE==='fore'?22:TemporalSync.MAX_HOURS;
@@ -124,7 +125,7 @@ function syncTemporal(anchor){
 }
 function eventStart(ev,p){
  const start=startMs(p);if(isoD(start)===ev.start)return start;
- const detected=HBY[ev.start]?.t;return Number.isFinite(detected)?TemporalSync.floor(detected):Date.parse(ev.start+'T00:00:00Z');
+ const selected=DETECTIONS.filter(r=>r.date===ev.start&&POINT_SEL.has(WorkflowData.detection(r))),detected=selected.length?Math.min(...selected.map(r=>r.t)):HBY[ev.start]?.t;return Number.isFinite(detected)?TemporalSync.floor(detected):Date.parse(ev.start+'T00:00:00Z');
 }
 
 
@@ -138,7 +139,7 @@ const startMs=p=>{if(Number.isFinite(p.start))return p.start;if(p.mode==='hind')
 /* ================= cache (IndexedDB, this browser only) ================= */
 DataIO.warn=m=>note('WARN',m);
 const idb=(m,k,v)=>DataIO.cache(m,k,v);
-$('clear').onclick=async()=>{await idb('clear');PREP_CACHE.clear();WX_CACHE.clear();log('Cache cleared.')};
+$('clear').onclick=async()=>{if(prepActive||running||calActive)return log('Stop the current operation before clearing downloaded data.');await idb('clear');PREP_CACHE.clear();WX_CACHE.clear();log('Saved download cache cleared. Current prepared data is retained.')};
 
 /* ================= network helper with clear error messages ================= */
 async function getJ(url,label,tries=3,timeoutMs=30000,signal=DataIO.signal){let last;for(let a=0;a<tries;a++){
@@ -273,13 +274,13 @@ async function eeTile(img,x0,y0,tw,th,grid=G){
  const r=await new Promise((ok,no)=>img.sampleRectangle({region:reg,defaultValue:MISSING}).getInfo((v,er)=>er?no(Error(er)):ok(v))),o=r.properties,out={};
  for(const k in o){out[k]=Int16Array.from(o[k].flat());if(out[k].length!==tw*th)throw Error(`Earth Engine tile size mismatch (${out[k].length} vs ${tw*th})`)}return out}
 const EE_REQUIRED=['nw','nd','nm','sm','wi','lst','recent','bsi','z','lc','wcWater'];
-function validEETile(o,n,bi){return !!o&&[...EE_REQUIRED,...(bi?['bx']:[])].every(k=>o[k]&&o[k].length===n)}
+function validEETile(o,n,bi){return !!o&&(Array.isArray(bi)?bi:[...EE_REQUIRED,...(bi?['bx']:[])]).every(k=>o[k]&&o[k].length===n)}
 async function prepareEETile(img,t,base,bi,depth=0,signal=DataIO.signal,grid=G){
  DataIO.check(signal);const key=base+JSON.stringify([t.x0,t.y0,t.tw,t.th]);let o=await idb('get',key);DataIO.check(signal);if(validEETile(o,t.tw*t.th,bi))return{data:o,cached:true};
  const split=await idb('get',key+':split'),canSplit=depth<2&&(t.tw>64||t.th>64);let last;
  for(let attempt=1;!split&&attempt<=2;attempt++){
   try{DataIO.check(signal);const image=typeof img==='function'?await img():img;DataIO.check(signal);
-   const call=DataIO.once(key,async()=>{const data=await eeTile(image,t.x0,t.y0,t.tw,t.th,grid);if(!validEETile(data,t.tw*t.th,bi))throw Error('Earth Engine tile missing required raster bands');await idb('put',key,data);return data});
+   const epoch=DataIO.epoch,call=DataIO.once(key+':'+epoch,async()=>{const data=await eeTile(image,t.x0,t.y0,t.tw,t.th,grid);if(!validEETile(data,t.tw*t.th,bi))throw Error('Earth Engine tile missing required raster bands');if(epoch===DataIO.epoch)await idb('put',key,data);return data});
    o=await DataIO.wait(call,signal,canSplit?45000:90000);return{data:o,cached:false}
   }catch(e){DataIO.check(signal);last=e;if(/auth|permission|project|credential|not signed|sign in|access denied/i.test(e.message))break;
    note('WARN',`Earth Engine tile ${t.x0},${t.y0}: ${e.message}`);prepStage('satellite','active',`Tile ${t.x0},${t.y0}: retrying missing data`,prepStates.satellite?.fraction||0);
@@ -293,6 +294,21 @@ async function prepareEETile(img,t,base,bi,depth=0,signal=DataIO.signal,grid=G){
   if(!validEETile(out,t.tw*t.th,bi))throw Error('Earth Engine split tiles were incomplete.');await idb('put',key,out);DataIO.check(signal);return{data:out,cached:false}
  }
  throw Error(`Earth Engine tile ${t.x0},${t.y0} failed: ${last?.message||'request failed'}. Completed tiles remain cached; use ↻ Retry.`)
+}
+async function preparedSatelliteTile(img,t,legacy,p,signal,grid){
+ const dims=JSON.stringify([t.x0,t.y0,t.tw,t.th]),geometry=[grid.w,grid.n,grid.dx,grid.dy,grid.nx,grid.ny],out={};
+ const groups=WorkflowData.satellite({...p,start:startMs(p)},EVENTS),old=await idb('get',legacy+dims);DataIO.check(signal);
+ let cached=true;
+ for(const [bands,dependency] of groups){
+  const base=JSON.stringify(['ee-bands-1',geometry,bands,dependency]),key=base+dims;
+  let data=await idb('get',key);DataIO.check(signal);
+  if(!validEETile(data,t.tw*t.th,bands)&&validEETile(old,t.tw*t.th,bands)){data=Object.fromEntries(bands.map(k=>[k,old[k]]));await idb('put',key,data)}
+  if(!validEETile(data,t.tw*t.th,bands)){
+   const result=await prepareEETile(async()=>(await img()).select(bands),t,base,bands,0,signal,grid);data=result.data;cached=cached&&result.cached;
+  }
+  Object.assign(out,data);
+ }
+ return {data:out,cached};
 }
 function baseOf(nw,nd,nm,sm,p){const fn=nw!==MISSING&&nd!==MISSING?clamp((nw-nd)/5000,0,1):0,mv=nm!==MISSING?clamp((nm/1e4+.2)/.6,0,1):.5,ms=sm!==MISSING?clamp(sm/1e4/.4,0,1):.5;
  const fuel=1+p.wCure*((.25+.75*fn)-1),moist=Math.max(.03,1-.8*(.7*mv*p.wNdmi+.3*ms*p.wSoil));return clamp(fuel*moist,0,1)}
@@ -308,12 +324,12 @@ function renderPreview(){if(!PREVIEW)return;const {grid:g,canvas}=PREVIEW,im=can
 function attachPreview(grid){if(PREVIEW?.overlay)PREVIEW.overlay.remove();const canvas=document.createElement('canvas');canvas.width=grid.nx;canvas.height=grid.ny;const overlay=new CanvasOverlay(canvas,[[grid.s,grid.w],[grid.n,grid.e]],{opacity:1,interactive:false,pane:'raster'}).addTo(map);PREVIEW={grid,canvas,overlay};$('lyr').value='fuelmask';renderPreview()}
 $('previewcure').onclick=async()=>{const button=$('previewcure'),seq=++previewSeq;try{if(!AOI)throw Error('Draw or load an AOI first.');const p=P();if(!p.ww0||!p.ww1||!p.dw0||!p.dw1||p.ww0>p.ww1||p.dw0>p.dw1)throw Error('Choose valid green and dry NDVI date ranges.');await ensureEE();if(!eeReady)throw Error('Sign in to Earth Engine to preview actual NDVI rasters.');button.disabled=true;$('curestatus').textContent='Loading green and dry NDVI only…';const g=previewGrid(p),reg=ee.Geometry.Rectangle([g.w,g.s,g.e,g.n],'EPSG:4326',false),image=ee.Image.cat([sr(p.sensor,p.ww0,addD(p.ww1,1),reg).select('ndvi').rename('nw'),sr(p.sensor,p.dw0,addD(p.dw1,1),reg).select('ndvi').rename('nd')]).multiply(1e4).round().toInt16().reproject({crs:'EPSG:4326',crsTransform:[g.dx,0,g.w,0,-g.dy,g.n]}).unmask(MISSING),tiles=[];
  for(let y=0;y<g.ny;y+=TS)for(let x=0;x<g.nx;x+=TS){const tw=Math.min(TS,g.nx-x),th=Math.min(TS,g.ny-y);let any=false;for(let yy=y;yy<y+th&&!any;yy++)for(let xx=x;xx<x+tw;xx++)if(g.inside[yy*g.nx+xx]){any=true;break}if(any)tiles.push({x,y,tw,th})}
- const key=JSON.stringify(['cure-preview-1',p.sensor,g.w,g.n,g.nx,g.ny,p.ww0,p.ww1,p.dw0,p.dw1]);let cursor=0,done=0,err=null;await Promise.all(Array.from({length:4},async()=>{while(cursor<tiles.length&&!err&&seq===previewSeq){const t=tiles[cursor++];try{const ck=key+JSON.stringify([t.x,t.y,t.tw,t.th]);let o=await idb('get',ck);if(!o){o=await eeTile(image,t.x,t.y,t.tw,t.th,g);await idb('put',ck,o)}for(let j=0;j<t.th;j++)for(let i=0;i<t.tw;i++){const dst=(t.y+j)*g.nx+t.x+i,src=j*t.tw+i;g.nw[dst]=o.nw[src];g.nd[dst]=o.nd[src]}$('curestatus').textContent=`NDVI tiles ${++done}/${tiles.length}…`}catch(e){err=e}}}));if(err)throw err;if(seq!==previewSeq)return;dropGrid();attachPreview(g);map.fitBounds([[g.s,g.w],[g.n,g.e]])}catch(e){$('curestatus').textContent='Error: '+e.message;note('ERR','NDVI preview: '+e.message)}finally{button.disabled=false}};
-$('curethr').oninput=()=>{$('curevalue').textContent=(+$('curethr').value).toFixed(2);if(G){const g={w:G.w,n:G.n,e:G.e,s:G.s,nx:G.nx,ny:G.ny,N:G.N,inside:G.inside,nw:G.nw,nd:G.nd};dropGrid();attachPreview(g);log('Threshold changed. Preview updated; press Prepare again before running.')}else if(PREVIEW)renderPreview()};
-for(const id of ['ww0','ww1','dw0','dw1'])$(id).addEventListener('change',()=>{clearPreview();dropGrid()});
-for(const id of ['lst0','lst1'])$(id).addEventListener('change',dropGrid);
+ const key=JSON.stringify(['cure-preview-1',p.sensor,g.w,g.n,g.nx,g.ny,p.ww0,p.ww1,p.dw0,p.dw1]);let cursor=0,done=0,err=null;await Promise.all(Array.from({length:4},async()=>{while(cursor<tiles.length&&!err&&seq===previewSeq){const t=tiles[cursor++];try{const ck=key+JSON.stringify([t.x,t.y,t.tw,t.th]);let o=await idb('get',ck);if(!o){o=await eeTile(image,t.x,t.y,t.tw,t.th,g);await idb('put',ck,o)}for(let j=0;j<t.th;j++)for(let i=0;i<t.tw;i++){const dst=(t.y+j)*g.nx+t.x+i,src=j*t.tw+i;g.nw[dst]=o.nw[src];g.nd[dst]=o.nd[src]}$('curestatus').textContent=`NDVI tiles ${++done}/${tiles.length}…`}catch(e){err=e}}}));if(err)throw err;if(seq!==previewSeq)return;attachPreview(g);map.fitBounds([[g.s,g.w],[g.n,g.e]])}catch(e){$('curestatus').textContent='Error: '+e.message;note('ERR','NDVI preview: '+e.message)}finally{button.disabled=false}};
+$('curethr').oninput=()=>{$('curevalue').textContent=(+$('curethr').value).toFixed(2);if(PREVIEW)renderPreview();workflowChanged()};
+for(const id of ['ww0','ww1','dw0','dw1','lst0','lst1'])$(id).addEventListener('change',()=>{clearPreview();workflowChanged()});
 async function loadEE(p){const signal=DataIO.signal,grid=G,{nx,ny,N}=grid;
- if($('noee').checked){for(let i=0;i<N;i++){G.z[i]=0;G.lc[i]=30;G.nw[i]=8000;G.nd[i]=2000;G.nm[i]=2000;G.sm[i]=2000;G.base[i]=Math.round(baseOf(8000,2000,2000,2000,p)*255);G.fuelMask[i]=hasFuel(8000,2000,p.cureThr)?1:0}G.variation=makeVariation(N);G.gaps='Satellite layers skipped for testing. Recent NDVI, BSI and LST unavailable.';return}
+ G.hasBI=false;G.bx.fill(MISSING);G.bareFactor.fill(1);G.hardBare.fill(0);G.slope=null;
+ if($('noee').checked){for(const k of ['wi','lst','recent','bsi'])G[k].fill(MISSING);G.water.fill(0);G.demMissing.fill(0);for(let i=0;i<N;i++){G.z[i]=0;G.lc[i]=30;G.nw[i]=8000;G.nd[i]=2000;G.nm[i]=2000;G.sm[i]=2000;G.base[i]=Math.round(baseOf(8000,2000,2000,2000,p)*255);G.fuelMask[i]=hasFuel(8000,2000,p.cureThr)?1:0}G.variation=makeVariation(N);G.gaps='Satellite layers skipped for testing. Recent NDVI, BSI and LST unavailable.';return}
  const fireStart=isoD(startMs(p));if((p.lst0&&p.lst1&&p.lst0>p.lst1)||(p.lst1&&p.lst1>=fireStart))throw Error('LST date range must end before the fire start date.');
  let imagePromise;const img=()=>imagePromise||(imagePromise=(async()=>{await ensureEE();DataIO.check(signal);if(!eeReady)throw Error('Sign in to Earth Engine to fetch missing tiles. Completed tiles are cached.');return eeImage(p,ee.Geometry.Rectangle([grid.w,grid.s,grid.e,grid.n],'EPSG:4326',false))})());const tiles=[];
  for(let y0=0;y0<ny;y0+=TS)for(let x0=0;x0<nx;x0+=TS){const tw=Math.min(TS,nx-x0),th=Math.min(TS,ny-y0);let any=false;
@@ -321,7 +337,7 @@ async function loadEE(p){const signal=DataIO.signal,grid=G,{nx,ny,N}=grid;
   if(any)tiles.push({x0,y0,tw,th})}
  const d0=isoD(startMs(p)),miss={nw:0,nd:0,nm:0,wi:0,sm:0,bx:0,z:0,lst:0,recent:0,bsi:0},cnt={done:0,hit:0};let err=null,tot=0;
  const kb=JSON.stringify(['ee8',p.sensor,p.dem,p.cell,G.w,G.n,G.dx,G.dy,G.nx,G.ny,AOI,p.ww0,p.ww1,p.dw0,p.dw1,p.nm0,p.nm1,p.wi0,p.wi1,p.lst0,p.lst1,d0,p.bi?[p.bx,p.pre,p.post,p.hours,p.eventEnd,EVENTS.map(e=>[e.start,e.end])]:0, ...(!p.eventEnd&&!EVENTS.length&&p.bi?[isoD(startMs(p)+p.hours*36e5)]:[])]);
- const work=async t=>{if(err)return;try{const result=await prepareEETile(img,t,kb,p.bi,0,signal,grid),o=result.data;DataIO.check(signal);if(result.cached)cnt.hit++;
+ const work=async t=>{if(err)return;try{const result=await preparedSatelliteTile(img,t,kb,p,signal,grid),o=result.data;DataIO.check(signal);if(result.cached)cnt.hit++;
   for(let ty=0;ty<t.th;ty++)for(let tx=0;tx<t.tw;tx++){const q=ty*t.tw+tx,i=(t.y0+ty)*nx+t.x0+tx;if(!G.inside[i])continue;tot++;
    const nw=o.nw[q],nd=o.nd[q],nm=o.nm[q],sm=o.sm[q];if(nw===MISSING)miss.nw++;if(nd===MISSING)miss.nd++;if(nm===MISSING)miss.nm++;if(sm===MISSING)miss.sm++;if(o.wi[q]===MISSING)miss.wi++;if(o.lst[q]===MISSING)miss.lst++;if(o.recent[q]===MISSING)miss.recent++;if(o.bsi[q]===MISSING)miss.bsi++;G.nw[i]=nw;G.nd[i]=nd;G.nm[i]=nm;G.sm[i]=sm;G.wi[i]=o.wi[q];G.lst[i]=o.lst[q];G.recent[i]=o.recent[q];G.bsi[i]=o.bsi[q];
    G.demMissing[i]=o.z[q]===MISSING?1:0;G.z[i]=o.z[q]===MISSING?0:o.z[q];if(G.demMissing[i])miss.z++;G.lc[i]=o.lc[q]===MISSING?30:o.lc[q];
@@ -393,7 +409,7 @@ async function fetchOSMBarriers(box){
  const result=[...ways.values()];await idb('put',key,{savedAt:Date.now(),ways:result});DataIO.check(signal);return result;
 }
 async function loadLinearBarriers(){if(BARRIER_SKIP){G.lineBarrier.fill(0);note('WARN','Road/river barriers explicitly skipped by user; simulation will run without these line barriers.');return{roads:0,rivers:0,cells:0,skipped:true}}const signal=DataIO.signal,b=G,box=[b.s,b.w,b.n,b.e].join(','),ways=USER_LINES||await fetchOSMBarriers(box);
- DataIO.check(signal);if(USER_LINES)prepStage('barriers','active','Using uploaded road/river geometry',.8);
+ DataIO.check(signal);b.lineBarrier.fill(0);if(USER_LINES)prepStage('barriers','active','Using uploaded road/river geometry',.8);
  const canvas=document.createElement('canvas');canvas.width=b.nx;canvas.height=b.ny;const c=canvas.getContext('2d',{willReadFrequently:true});if(!c)throw Error('Canvas unavailable for road/river barriers.');c.strokeStyle='#fff';c.lineWidth=1.45;c.lineCap='square';c.lineJoin='round';let roads=0,rivers=0;
  for(const way of ways){if(way.kind==='road')roads++;else rivers++;c.beginPath();for(let k=0;k<way.geometry.length;k++){const g=way.geometry[k],x=(g.lon-b.w)/b.dx,y=(b.n-g.lat)/b.dy;if(k)c.lineTo(x,y);else c.moveTo(x,y)}c.stroke()}
  const pixels=c.getImageData(0,0,b.nx,b.ny).data;let cells=0;for(let i=0;i<b.N;i++)if(b.inside[i]&&pixels[i*4+3]){b.lineBarrier[i]=1;cells++}canvas.width=0;note('OK',`${USER_LINES?'Uploaded':'OSM'} barriers: ${roads} roads, ${rivers} waterways, ${cells} blocked cells; surface fire cannot cross mapped lines.`);return{roads,rivers,cells}}
@@ -407,9 +423,9 @@ function weatherRow(row){const lat=Number(row.latitude),lon=Number(row.longitude
  const values={};for(const [k,col] of Object.entries(WX_VARS)){const v=row[col];if(v===undefined||v===null||String(v).trim()==='')continue;const n=Number(v);if(!Number.isFinite(n)||k==='wind'&&n<0||k==='dir'&&(n<0||n>360)||k==='rh'&&(n<0||n>100)||k==='rain'&&n<0)throw Error('Invalid '+col+' value.');values[k]=n}
  if(!Object.keys(values).length)throw Error('Supply at least one weather variable.');return{lat,lon,at,values}}
 function weatherSummary(extra=''){const n=FIELD.weather.length,vars=[...new Set(FIELD.weather.flatMap(r=>Object.keys(r.values)))];$('weathermethod').querySelector('[value=quantile]').disabled=n<2;if(n<2)$('weathermethod').value='bias';fieldStatus(bilingual(`${n} observation(s); ${vars.length?vars.join(', '):'no variables'}. ${n<2?'Bias Correction only; Quantile Mapping needs at least 2 matches.':'Bias Correction or Quantile Mapping available.'} ${extra}`,`${n} अवलोकन; ${vars.length?vars.join(', '):'माप नहीं'}। ${n<2?'केवल बायस सुधार; क्वांटाइल के लिए कम से कम 2 मेल चाहिए।':'बायस या क्वांटाइल उपलब्ध।'} ${extra}`))}
-$('addweather').onclick=()=>{try{const row={latitude:$('fieldlat').value,longitude:$('fieldlon').value,date:$('fielddate').value,time:$('fieldtime').value};for(const [k,col] of Object.entries(WX_VARS))row[col]=$('field'+k).value;FIELD.weather.push(weatherRow(row));weatherSummary()}catch(e){fieldStatus(e.message)}};
-$('weatherfile').onchange=async e=>{const file=e.target.files[0],signal=DataIO.signal;if(!file)return;try{const csv=csvRows(await file.text()),head=csv.shift()?.map(v=>v.trim().toLowerCase().replace(/^\ufeff/,''));if(!head||!['latitude','longitude','date','time'].every(k=>head.includes(k)))throw Error('CSV needs latitude, longitude, date, time columns.');const rows=csv.map(r=>weatherRow(Object.fromEntries(head.map((h,i)=>[h,r[i]??'']))));DataIO.check(signal);FIELD.weather.push(...rows);weatherSummary(`${rows.length} imported from CSV.`)}catch(err){if(!signal.aborted)fieldStatus('CSV: '+err.message)}finally{e.target.value=''}};
-$('clearweather').onclick=()=>{FIELD.weather.length=0;weatherSummary()};weatherSummary();
+$('addweather').onclick=()=>{try{const row={latitude:$('fieldlat').value,longitude:$('fieldlon').value,date:$('fielddate').value,time:$('fieldtime').value};for(const [k,col] of Object.entries(WX_VARS))row[col]=$('field'+k).value;FIELD.weather.push(weatherRow(row));weatherSummary();workflowChanged()}catch(e){fieldStatus(e.message)}};
+$('weatherfile').onchange=async e=>{const file=e.target.files[0],signal=DataIO.signal;if(!file)return;try{const csv=csvRows(await file.text()),head=csv.shift()?.map(v=>v.trim().toLowerCase().replace(/^\ufeff/,''));if(!head||!['latitude','longitude','date','time'].every(k=>head.includes(k)))throw Error('CSV needs latitude, longitude, date, time columns.');const rows=csv.map(r=>weatherRow(Object.fromEntries(head.map((h,i)=>[h,r[i]??'']))));DataIO.check(signal);FIELD.weather.push(...rows);weatherSummary(`${rows.length} imported from CSV.`);workflowChanged()}catch(err){if(!signal.aborted)fieldStatus('CSV: '+err.message)}finally{e.target.value=''}};
+$('clearweather').onclick=()=>{FIELD.weather.length=0;weatherSummary();workflowChanged()};weatherSummary();
 function fieldMatch(M){const matched=[];for(const row of FIELD.weather){if(row.lon<G.w||row.lon>G.e||row.lat<G.s||row.lat>G.n)continue;let ti=-1,best=Infinity;for(let i=0;i<M.len;i++){const t=Date.parse(M.times[i]+'Z'),d=Math.abs(t-row.at);if(d<best){best=d;ti=i}}if(best>30*60000)continue;let q=0,dist=Infinity;for(let k=0;k<M.np;k++){const d=(M.lat[k]-row.lat)**2+((M.lon[k]-row.lon)*Math.cos(row.lat*Math.PI/180))**2;if(d<dist){dist=d;q=k}}matched.push({...row,q,ti})}return matched}
 function angularDifference(a,b){return((a-b+540)%360)-180}
 function fieldModel(M,r,k){const q=r.q,i=r.ti,T=M.Ts[q][i]-.0065*M.elev[q],u=M.U[q][i],v=M.V[q][i];return k==='temp'?T:k==='wind'?Math.hypot(u,v):k==='dir'?(Math.atan2(-u,-v)*180/Math.PI+360)%360:k==='rh'?clamp(100*M.E[q][i]/Math.exp(M.elev[q]/2500)/esat(T),0,100):M.P[q][i]}
@@ -440,9 +456,9 @@ async function lookupSpecies(name){const query='"'+name.replace(/[^\p{L} .-]/gu,
  const labels=new Set(classes.map(x=>x.cls));return{name,cls:labels.size===1?classes[0].cls:null,source:labels.size===1?classes[0]:null,reason:labels.size>1?'conflicting studies':'no explicit class found in matched research'}}
 function renderSpecies(){const host=$('speciesstatus');host.replaceChildren();if(!FIELD.species.length){host.textContent=bilingual('No species classification loaded.','कोई प्रजाति वर्ग लोड नहीं।');return}for(const r of FIELD.species){const div=document.createElement('div');div.textContent=`${r.name}: ${r.cls? r.cls.toUpperCase() : 'unresolved ('+r.reason+')'}`;if(r.source){const a=document.createElement('a');a.href=r.source.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent=' · '+r.source.title;div.append(a)}host.append(div)}const valid=FIELD.species.filter(x=>x.cls);if(valid.length){const cls=representativeSpecies();host.append(document.createTextNode(bilingual(`Representative: ${cls} (${valid.length} resolved).`,`प्रतिनिधि वर्ग: ${cls} (${valid.length} प्रमाणित)।`)))}}
 function representativeSpecies(){const codes={low:1,medium:2,high:3},valid=FIELD.species.filter(x=>x.cls).map(x=>codes[x.cls]);if(!valid.length)return null;const m=Math.round(valid.reduce((a,b)=>a+b,0)/valid.length);return['','low','medium','high'][m]}
-$('species').oninput=()=>{FIELD.species=[];FIELD.lookupSignature='';renderSpecies()};
-async function ensureSpeciesLookups(){const signal=DataIO.signal;const names=speciesNames(),button=$('lookupspecies');if(FIELD.lookupSignature===names.join('|'))return;if(!names.length){FIELD.species=[];FIELD.lookupSignature='';renderSpecies();return}button.disabled=true;FIELD.species=[];$('speciesstatus').textContent=bilingual('Searching published research…','प्रकाशित शोध खोज रहे हैं…');try{for(const name of names){try{const result=await DataIO.wait(lookupSpecies(name),signal);DataIO.check(signal);FIELD.species.push(result)}catch(e){DataIO.check(signal);FIELD.species.push({name,cls:null,reason:'lookup failed: '+e.message})}renderSpecies();if(prepActive)prepStage('field','active',`Species ${FIELD.species.length}/${names.length}`,FIELD.species.length/names.length)}FIELD.lookupSignature=names.join('|')}finally{button.disabled=false}}
-$('lookupspecies').onclick=()=>ensureSpeciesLookups();
+$('species').oninput=()=>{FIELD.species=[];FIELD.lookupSignature='';renderSpecies();workflowChanged()};
+async function ensureSpeciesLookups(){const signal=DataIO.signal;const names=speciesNames(),button=$('lookupspecies');if(FIELD.lookupSignature===names.join('|')&&!FIELD.species.some(r=>r.reason?.startsWith('lookup failed:')))return;if(!names.length){FIELD.species=[];FIELD.lookupSignature='';renderSpecies();return}button.disabled=true;const previous=new Map(FIELD.species.map(r=>[r.name,r]));FIELD.species=[];$('speciesstatus').textContent=bilingual('Searching published research…','प्रकाशित शोध खोज रहे हैं…');try{for(const name of names){try{const saved=previous.get(name),result=saved&&!saved.reason?.startsWith('lookup failed:')?saved:await DataIO.wait(lookupSpecies(name),signal);DataIO.check(signal);FIELD.species.push(result)}catch(e){DataIO.check(signal);FIELD.species.push({name,cls:null,reason:'lookup failed: '+e.message})}renderSpecies();if(prepActive)prepStage('field','active',`Species ${FIELD.species.length}/${names.length}`,FIELD.species.length/names.length)}FIELD.lookupSignature=names.join('|')}finally{button.disabled=false}}
+$('lookupspecies').onclick=async()=>{await ensureSpeciesLookups();workflowChanged()};
 function applyFieldLayers(){const names=speciesNames();if(FIELD.lookupSignature!==names.join('|')){FIELD.species=[];renderSpecies()}const species=representativeSpecies(),foliage=$('litter').checked?$('litterclass').value:null,code={low:1,medium:2,high:3},factor={low:.85,medium:1,high:1.15};G.speciesClass=species;G.foliageClass=foliage;G.speciesRaster=species?new Uint8Array(G.N):null;G.foliageRaster=foliage?new Uint8Array(G.N):null;G.fieldFuelFactor=(factor[species]||1)*(factor[foliage]||1);for(let i=0;i<G.N;i++)if(G.inside[i]){if(species)G.speciesRaster[i]=code[species];if(foliage)G.foliageRaster[i]=code[foliage]}if(species||foliage)note('OK',`Optional fuel observations: species ${species||'none'}, foliage ${foliage||'none'}; existing spread multiplied by ${G.fieldFuelFactor.toFixed(3)} on burnable cells.`)}
 function clearFieldInputs(){FIELD.weather=[];FIELD.species=[];FIELD.lookupSignature='';$('weatherfile').value='';for(const id of ['fieldlat','fieldlon','fielddate','fieldtime','fieldtemp','fieldwind','fielddir','fieldrh','fieldrain'])$(id).value='';$('weathermethod').value='bias';$('species').value='';$('litter').checked=false;$('litterclass').value='high';weatherSummary();renderSpecies()}
 renderSpecies();
@@ -450,7 +466,7 @@ renderSpecies();
 /* ================= Open-Meteo lattice ================= */
 const WX_CACHE=new Map();async function loadMet(p){const signal=DataIO.signal,grid=G,now=Date.now(),ts=startMs(p);
  const window=TemporalSync.windowFor(p.mode,ts,p.hours,now),cacheKey=JSON.stringify([G.w,G.n,G.dx,G.dy,G.nx,G.ny,ts,window.hours,p.spc,p.mode]);
- const saved=WX_CACHE.get(cacheKey);if(saved&&(saved.expires>now)){G.M=applyFieldWeather(saved.M);W=null;return}
+ const saved=WX_CACHE.get(cacheKey);if(saved&&(saved.expires>now)){G.M=applyFieldWeather(saved.M);G.weatherExpires=saved.expires;W=null;return}
  const km=(G.e-G.w)*111.32*Math.cos((G.n+G.s)/2*Math.PI/180),kh=(G.n-G.s)*111.32;let sp=p.spc,nlx,nly;
  const dims=()=>{nlx=Math.max(2,Math.ceil(km/sp)+1);nly=Math.max(2,Math.ceil(kh/sp)+1)};dims();while(nlx*nly>400){sp*=1.25;dims()}
  const la=[],lo=[];for(let y=0;y<nly;y++)for(let x=0;x<nlx;x++){la.push((G.n-y/(nly-1)*(G.n-G.s)).toFixed(3));lo.push((G.w+x/(nlx-1)*(G.e-G.w)).toFixed(3))}
@@ -468,7 +484,7 @@ const WX_CACHE=new Map();async function loadMet(p){const signal=DataIO.signal,gr
    Pr[i]=h.precipitation[i]??0;let a=0;for(let k=0;k<=72&&i-k>=0;k++)a+=(h.precipitation[i-k]??0)*Math.exp(-k/48);A[i]=a}
   M.U.push(U);M.V.push(V);M.Ts.push(Ts);M.E.push(E);M.A.push(A);M.P.push(Pr)}
  for(let q=0;q<np;q++){const avg=a=>ix.reduce((sum,i)=>sum+a[i],0)/ix.length,u=avg(M.U[q]),v=avg(M.V[q]),T=avg(M.Ts[q])-.0065*(outs[q].elevation||0);M.avg.temp[q]=T;M.avg.wind[q]=Math.hypot(u,v);M.avg.wdir[q]=(Math.atan2(u,v)*180/Math.PI+360)%360;M.avg.rh[q]=clamp(100*avg(M.E[q])/esat(T),0,100);M.avg.rain[q]=avg(M.P[q])}M.meanIndices=ix;
- G.M=applyFieldWeather(M);W=null;WX_CACHE.set(cacheKey,{M,expires:outs.expires});if(WX_CACHE.size>12)WX_CACHE.delete(WX_CACHE.keys().next().value);note('OK',`Open-Meteo: ${np} points (${nlx}×${nly}, ${sp.toFixed(1)} km), ${len} hours ${t[0]} to ${t[len-1]}, start ${hrS}.`)}
+ G.M=applyFieldWeather(M);G.weatherExpires=outs.expires;W=null;WX_CACHE.set(cacheKey,{M,expires:outs.expires});if(WX_CACHE.size>12)WX_CACHE.delete(WX_CACHE.keys().next().value);note('OK',`Open-Meteo: ${np} points (${nlx}×${nly}, ${sp.toFixed(1)} km), ${len} hours ${t[0]} to ${t[len-1]}, start ${hrS}.`)}
 
 /* ================= FIRMS fire detections ================= */
 function csvRows(text){const rows=[],row=[];let cell='',quoted=false;for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(quoted&&text[i+1]==='"'){cell+='"';i++}else quoted=!quoted}else if(c===','&&!quoted){row.push(cell);cell=''}else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&text[i+1]==='\n')i++;row.push(cell);if(row.some(Boolean))rows.push(row.splice(0));cell=''}else cell+=c}row.push(cell);if(row.some(Boolean))rows.push(row);return rows}
@@ -514,69 +530,129 @@ async function getDetections(dA,dB,bb,key,force=false){
  catch(e){DataIO.check(signal);note('ERR','FIRMS API failed: '+e.message);await probeNet();
   if(eeReady){FBT=Date.now();try{localStorage.setItem('wf_fbt',FBT)}catch(_){}note('INFO','Falling back to MODIS detections from Earth Engine (1 km, daily).');LASTSRC='MODIS via Earth Engine (fallback)';return eeFirms(dA,dB)}throw e}}
 const bboxStr=()=>{const b=drawn.getBounds();return[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].map(v=>v.toFixed(4)).join(',')};
-$('firmsfile').onchange=e=>{const f=e.target.files[0],signal=DataIO.signal;if(!f){FILEROWS=null;return}f.text().then(t=>{if(signal.aborted)return;FILEROWS=parseCSV(t);log(`Loaded ${FILEROWS.length} detections from the CSV file. They are used instead of the FIRMS API.`)}).catch(x=>{if(signal.aborted)return;FILEROWS=null;log('CSV error: '+x.message)})};
-async function loadFire(p){const signal=DataIO.signal;const hind=p.mode==='hind',tA=hind?startMs(p):Date.now()-p.look*36e5,tB=hind?tA+p.hours*36e5:Date.now();let rows;
- if(FILEROWS)rows=FILEROWS;else if(hind&&HROWS)rows=HROWS;else{const key=$('firms').value.trim();if(!key&&!eeReady){log('Enter a FIRMS key or sign in to Earth Engine.');return null}rows=await getDetections(isoD(tA),isoD(tB),bboxStr(),key)}
- DataIO.check(signal);const selected=hind&&SEL.size,days=SEL,dotsSeen=new Set();let n=0,burnable=0;dots.clearLayers();G.seedSpec=[];G.dets=[];G.skipped=[];
- for(const r of rows){if(selected?!days.has(r.date):(r.day?r.date<isoD(tA)||r.date>isoD(tB):r.t<tA||r.t>tB))continue;
-  const i=cellAt(r.la,r.lo);if(i<0||!G.inside[i])continue;n++;const rad=r.b.startsWith('MODIS')?500:190,ok=!cellBlocked(i);
-  L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,weight:1,color:'#fff',fillColor:ok?'#a855f7':'#38bdf8',fillOpacity:.95}).addTo(dots);
-  if(!ok){G.skipped.push(r);continue}burnable++;G.dets.push({i,rad,t:r.t});disc(i,rad,j=>G.obs[j]=1);
-  if(!dotsSeen.has(i)){dotsSeen.add(i);G.seedSpec.push({i,rad:p.ignmode==='pixel'?rad:p.seedR,date:r.date})}}
- note('OK',`Ignition: ${n} selected / ${burnable} on burnable cells / ${G.seedSpec.length} ignited at t=0; ${G.skipped.length} skipped (cyan).`);
- return{nd:n,seeds:G.seedSpec.length}}
+$('firmsfile').onchange=async e=>{const f=e.target.files[0],signal=DataIO.signal;if(!f)return;try{const rows=parseCSV(await f.text());DataIO.check(signal);FILEROWS=rows;installDetections(rows,true);LASTSRC='CSV file';renderHist();workflowChanged();log(`Loaded ${rows.length} detections. Select ignition points on the map or select an event range.`)}catch(x){if(!signal.aborted)log('CSV error: '+x.message)}finally{e.target.value=''}};
+$('fireonlinereset').onclick=()=>{if(!$('firms').value.trim()&&!eeReady)return log('Enter a FIRMS key or sign in to Earth Engine before switching to online detections.');FILEROWS=null;HROWS=null;$('fireonlinereset').hidden=true;workflowChanged();if(!G)$('hbtn').click()};
+function installDetections(rows,history=false){
+ const bd=drawn.getBounds(),seen=new Set();DETECTIONS=rows.filter(r=>{const key=WorkflowData.detection(r);if(seen.has(key)||!bd.contains([r.la,r.lo]))return false;seen.add(key);return true});
+ POINT_SEL=new Set([...POINT_SEL].filter(k=>seen.has(k)));if(history)HROWS=DETECTIONS;
+ HBY={};for(const r of DETECTIONS){const o=HBY[r.date]||(HBY[r.date]={n:0,t:Infinity});o.n++;o.t=Math.min(o.t,r.t)}
+ syncSelectedDays();renderDetections();
+}
+function syncSelectedDays(){SEL=new Set(DETECTIONS.filter(r=>POINT_SEL.has(WorkflowData.detection(r))).map(r=>r.date));EVENTS=MODE==='hind'?selectedEvents():[]}
+function renderDetections(){
+ hdots.clearLayers();dots.clearLayers();let selected=0;
+ for(const r of DETECTIONS){const key=WorkflowData.detection(r),on=POINT_SEL.has(key);if(on)selected++;
+  const marker=L.circleMarker([r.la,r.lo],{pane:'dots',radius:on?6:3,weight:on?2:1,color:on?'#fff':'#64748b',fillColor:on?'#ffb342':'#94a3b8',fillOpacity:on?1:.5,bubblingMouseEvents:false});
+  const tip=document.createElement('span');tip.textContent=`${on?'Selected ignition':'Detection · tap to select'} · ${r.date} · ${r.b}`;marker.bindTooltip(tip);
+  marker.on('click',()=>{if(running||calActive)return log('Stop the current run before changing ignitions.');on?POINT_SEL.delete(key):POINT_SEL.add(key);syncSelectedDays();if(HROWS&&POINT_SEL.size)applySel();renderHist();renderDetections();workflowChanged()});marker.addTo(hdots);
+ }
+ for(const r of MANUAL_IGNITIONS){const marker=L.circleMarker([r.la,r.lo],{pane:'dots',radius:6,color:'#fff',weight:2,fillColor:'#22c55e',fillOpacity:1,bubblingMouseEvents:false});marker.bindTooltip('Selected manual ignition · tap to remove');marker.on('click',()=>{if(running||calActive)return;MANUAL_IGNITIONS=MANUAL_IGNITIONS.filter(x=>x!==r);renderDetections();workflowChanged()});marker.addTo(dots)}
+ $('fireonlinereset').hidden=!FILEROWS;const status=$('ignitionstatus');if(status)status.textContent=bilingual(`${selected}/${DETECTIONS.length} detections selected · ${MANUAL_IGNITIONS.length} manual ignition(s). Amber = selected; grey = unselected. Only selected points ignite.`,`${DETECTIONS.length} में से ${selected} डिटेक्शन चुने · ${MANUAL_IGNITIONS.length} मैनुअल इग्निशन। नारंगी = चुना, धूसर = नहीं चुना। केवल चुने बिंदुओं से आग शुरू होगी।`);
+}
+async function loadFire(p){const signal=DataIO.signal,hind=p.mode==='hind',tA=hind?startMs(p):startMs(p)-(p.mode==='fore'?2:0)*36e5-p.look*36e5,tB=hind?tA+p.hours*36e5:startMs(p)-(p.mode==='fore'?2:0)*36e5;
+ let rows=FILEROWS||(hind?HROWS:null);
+ if(!rows){const key=$('firms').value.trim();if(key||eeReady)rows=await getDetections(isoD(tA),isoD(tB),bboxStr(),key);else rows=DETECTIONS}
+ DataIO.check(signal);if(rows!==DETECTIONS)installDetections(rows);const seen=new Set();let n=0,burnable=0;
+ G.seedSpec=[];G.centers=[];G.dets=[];G.skipped=[];G.obs.fill(0);
+ for(const r of DETECTIONS){if(!POINT_SEL.has(WorkflowData.detection(r)))continue;
+  const i=cellAt(r.la,r.lo);if(i<0||!G.inside[i])continue;n++;const rad=r.b.startsWith('MODIS')?500:190;
+  if(cellBlocked(i)){G.skipped.push(r);continue}burnable++;G.dets.push({i,rad,t:r.t});disc(i,rad,j=>G.obs[j]=1);
+  // One selected detection can seed each event; duplicate pixels within an event seed once.
+  const event=EVENTS.find(e=>r.date>=e.start&&r.date<=e.end),key=i+':'+(event?.start||'run');if(!seen.has(key)){seen.add(key);G.seedSpec.push({i,rad:p.ignmode==='pixel'?rad:p.seedR,date:r.date})}
+ }
+ for(const r of MANUAL_IGNITIONS){const i=cellAt(r.la,r.lo);if(i>=0&&G.inside[i]&&!cellBlocked(i))G.seedSpec.push({i,rad:p.seedR,date:isoD(startMs(p))})}
+ renderDetections();note('OK',`Ignition: ${n} selected / ${burnable} on burnable cells / ${G.seedSpec.length} ignition inputs; ${G.skipped.length} selected points blocked.`);
+ return{nd:n,seeds:G.seedSpec.length};
+}
 
 /* fire history: real detections over a long period */
 function eventRanges(){const days=Object.keys(HBY).sort(),gap=clamp(+$('gap').value||0,0,30),groups=[];for(const d of days){const last=groups.at(-1);if(last&&daysBetween(last.end,d)<=gap+1){last.end=d;last.days.push(d);last.n+=HBY[d].n}else groups.push({start:d,end:d,days:[d],n:HBY[d].n})}return groups}
-function selectedEvents(){return eventRanges().filter(g=>g.days.some(d=>SEL.has(d)))}
-function renderHist(){const groups=eventRanges(),tot=groups.reduce((n,g)=>n+g.n,0);$('hist').innerHTML=tot?`<b>${tot}</b> detections in <b>${groups.length}</b> event ranges (${LASTSRC||'loaded'}).<br><a href="#" data-all="1">${LANG==='hi'?'सभी चुनें':'Select all'}</a> · <a href="#" data-none="1">${LANG==='hi'?'चयन साफ़ करें':'Clear all'}</a><div class="dates">`+groups.map((g,i)=>`<div class="event"><b>${i+1}.</b><a href="#" data-r="${i}" class="${g.days.some(d=>SEL.has(d))?'sel':''}">${g.start}${g.end!==g.start?' – '+g.end:''} (${g.n})</a></div>`).join('')+'</div>'+`<b>${selectedEvents().length}</b> ${LANG==='hi'?'रेंज चुनी गई हैं।':'ranges selected.'}`:(LANG==='hi'?'इस क्षेत्र और अवधि में कोई डिटेक्शन नहीं मिला। तारीखें और FIRMS कुंजी जाँचें।':'No detections in this area and period. Check dates and the FIRMS key.')}
-function applySel(){if(!SEL.size)return;const groups=selectedEvents();if(!groups.length)return;$('hs').value=groups[0].start;const first=HBY[groups[0].start]?.t;$('hh').value=Number.isFinite(first)?new Date(first).getUTCHours():0;if(MODE!=='hind')document.querySelector('.tabs button[data-m=hind]').click();const hours=groups.reduce((sum,g)=>sum+(daysBetween(g.start,g.end)+1)*24,0);$('hours').value=hours;useFireDefaults(groups[0].start,groups.at(-1).end)}
+function selectedEvents(){return eventRanges().flatMap(g=>{const days=g.days.filter(d=>SEL.has(d));return days.length?[{...g,start:days[0],end:days.at(-1),days,n:DETECTIONS.filter(r=>days.includes(r.date)&&POINT_SEL.has(WorkflowData.detection(r))).length}]:[]})}
+function renderHist(){const groups=eventRanges(),tot=DETECTIONS.length;$('hist').innerHTML=tot?`<b>${tot}</b> detections in <b>${groups.length}</b> event ranges.<br><a href="#" data-all="1">${LANG==='hi'?'सभी चुनें':'Select all'}</a> · <a href="#" data-none="1">${LANG==='hi'?'चयन साफ़ करें':'Clear all'}</a><div class="dates">`+groups.map((g,i)=>`<div class="event"><b>${i+1}.</b><a href="#" data-r="${i}" class="${g.days.some(d=>SEL.has(d))?'sel':''}">${g.start}${g.end!==g.start?' – '+g.end:''} (${g.n})</a></div>`).join('')+'</div>'+`<b>${POINT_SEL.size}</b> ${bilingual('ignition detections selected.','इग्निशन डिटेक्शन चुने गए।')}`:bilingual('No detections in this area and period.','इस क्षेत्र और अवधि में कोई डिटेक्शन नहीं मिला।');renderDetections()}
+function applySel(){if(!POINT_SEL.size)return;syncSelectedDays();const groups=selectedEvents();if(!groups.length)return;const first=DETECTIONS.filter(r=>POINT_SEL.has(WorkflowData.detection(r))).reduce((a,r)=>Math.min(a,r.t),Infinity);$('hs').value=groups[0].start;$('hh').value=Number.isFinite(first)?new Date(first).getUTCHours():0;if(MODE!=='hind')document.querySelector('.tabs button[data-m=hind]').click();const hours=groups.reduce((sum,g)=>sum+(daysBetween(g.start,g.end)+1)*24,0);$('hours').value=hours;useFireDefaults(groups[0].start,groups.at(-1).end);EVENTS=groups}
 function histMessage(t){$('hist').textContent=t;log(t)}
 $('hbtn').onclick=async()=>{const b=$('hbtn'),signal=DataIO.signal;try{if(!AOI)return histMessage('Draw an area on the map or load a GeoJSON area first.');const key=$('firms').value.trim();if(!key&&!FILEROWS&&!eeReady)return histMessage('Enter your NASA FIRMS map key under Accounts, or sign in to Earth Engine first.');b.disabled=true;saveKeys();histMessage('Loading fire detections…');
- const dA=$('fh0').value,dB=$('fh1').value,rows=FILEROWS||await getDetections(dA,dB,bboxStr(),key,true),bd=drawn.getBounds();DataIO.check(signal);clearHist();dropGrid();
- const keep=[];for(const r of rows){if(r.date<dA||r.date>dB||!bd.contains([r.la,r.lo]))continue;keep.push(r);const o=HBY[r.date]||(HBY[r.date]={n:0,t:1e15});o.n++;o.t=Math.min(o.t,r.t);
-  L.circleMarker([r.la,r.lo],{pane:'dots',radius:3,weight:1,color:'#fff',fillColor:'hsl('+(+r.date.slice(5,7)*30)+',90%,55%)',fillOpacity:.9}).addTo(hdots)}
- HROWS=keep;if(FILEROWS)LASTSRC='CSV file';renderHist();$('firebox').open=true;log(`Fire history: ${keep.length} detections on ${Object.keys(HBY).length} dates.`)}catch(e){if(!signal.aborted)histMessage('Error: '+(e.message||e))}finally{if(!signal.aborted)b.disabled=false}};
-$('hist').onclick=e=>{const a=e.target.closest('a');if(!a)return;e.preventDefault();
- if(a.dataset.all)Object.keys(HBY).forEach(d=>SEL.add(d));else if(a.dataset.none)SEL.clear();else if(a.dataset.r){const g=eventRanges()[+a.dataset.r];if(!g)return;const on=g.days.some(d=>SEL.has(d));g.days.forEach(d=>on?SEL.delete(d):SEL.add(d))}else return;
- applySel();clearPreview();dropGrid();renderHist()};
+ const dA=$('fh0').value,dB=$('fh1').value,rows=FILEROWS||await getDetections(dA,dB,bboxStr(),key,true);DataIO.check(signal);
+ installDetections(rows.filter(r=>r.date>=dA&&r.date<=dB),true);if(FILEROWS)LASTSRC='CSV file';if(POINT_SEL.size)applySel();renderHist();workflowChanged();$('firebox').open=true;log(`Fire history: ${DETECTIONS.length} detections. Select points or event ranges to ignite.`)}catch(e){if(!signal.aborted)histMessage('Error: '+(e.message||e))}finally{if(!signal.aborted)b.disabled=false}};
+$('hist').onclick=e=>{const a=e.target.closest('a');if(!a)return;e.preventDefault();if(running||calActive)return;
+ const rows=a.dataset.r!==undefined?DETECTIONS.filter(r=>eventRanges()[+a.dataset.r]?.days.includes(r.date)):DETECTIONS;
+ if(a.dataset.none)POINT_SEL.clear();else if(a.dataset.all)rows.forEach(r=>POINT_SEL.add(WorkflowData.detection(r)));else if(a.dataset.r!==undefined){const all=rows.every(r=>POINT_SEL.has(WorkflowData.detection(r)));rows.forEach(r=>all?POINT_SEL.delete(WorkflowData.detection(r)):POINT_SEL.add(WorkflowData.detection(r)))}else return;
+ syncSelectedDays();applySel();clearPreview();renderHist();workflowChanged()};
 
 /* ================= prepare ================= */
 function mkOverlays(){const{nx,ny,w,e,s,n}=G,mk=()=>{const c=document.createElement('canvas');c.width=nx;c.height=ny;return c},bb=[[s,w],[n,e]];
  G.bgc=mk();G.cv=mk();G.ctx=G.cv.getContext('2d');G.im=G.ctx.createImageData(nx,ny);
  G.bgo=new CanvasOverlay(G.bgc,bb,{opacity:lop(),interactive:false,pane:'raster'}).addTo(map);G.fo=new CanvasOverlay(G.cv,bb,{interactive:false,pane:'raster'}).addTo(map)}
 const lop=()=>clamp((+$('lop').value||100)/100,.2,1);
-// A checkpoint belongs to one exact set of preparation inputs and one grid.
-function prepSignature(p,weatherMethod=$('weathermethod').value){return JSON.stringify([AOI,p,startMs(p),selectedEvents(),[...SEL],
- $('noee').checked,chosenSources(),$('hiconf').checked,FILEROWS,HROWS,USER_LINES,BARRIER_SKIP,
- FIELD.weather,speciesNames(),weatherMethod,$('litter').checked,$('litterclass').value])}
-async function prepareData(retry=false){if(prepActive||running||calActive)return;const b=$('prep'),signal=DataIO.signal;try{
- if(!AOI){checklist([[false,'Area of interest missing','अध्ययन क्षेत्र नहीं मिला']]);return log('Draw or load an area first.')}
- if(!retry){if(MODE!=='hind')liveStart=Date.now()+(MODE==='fore'?2*36e5:0);syncTemporal()}
- const p=P(),key=prepSignature(p),resume=!!(retry&&prepCheckpoint?.key===key&&G&&G===prepCheckpoint.grid);
- if(retry&&!resume){$('retryprep').hidden=true;DATA_READY=false;$('run').disabled=true;return log('Settings or area changed. Press Prepare data; only matching cached requests will be reused.')}
- b.disabled=true;$('retryprep').disabled=true;$('run').disabled=true;DATA_READY=false;
- if(!resume){PREP_CACHE.clear();prepCheckpoint={key,grid:null,results:{}}}
- prepStart(resume);saveKeys();EVENTS=selectedEvents();
- if(!resume){BASE=CAL=CANDIDATE=null;SEARCH=[];REFS=[];$('val').innerHTML='';$('comparison').innerHTML='';$('obsstatus').textContent='';$('candidateTable').innerHTML='';$('paramCompare').innerHTML='';$('calEvents').innerHTML='';clearPreview();dropGrid(true);const bb=drawn.getBounds();
- build({w:bb.getWest(),e:bb.getEast(),s:bb.getSouth(),n:bb.getNorth()},p,AOI);mkOverlays();prepCheckpoint.grid=G;prepStage('area','done',`${G.nx} × ${G.ny} · ${G.N.toLocaleString()} cells`)}
- const stage=async(key,detail,work,state,summary)=>{
-  if(['done','warn'].includes(prepStates[key]?.state))return prepCheckpoint.results[key];
-  prepStage(key,'active',detail);const weatherMethod=$('weathermethod').value,result=await DataIO.wait(work(),signal);DataIO.check(signal);
-  if(G!==prepCheckpoint.grid||prepSignature(P(),key==='weather'?weatherMethod:$('weathermethod').value)!==prepCheckpoint.key)throw Error('Settings or area changed during preparation. Press Prepare data.');
-  prepCheckpoint.key=prepSignature(P());prepCheckpoint.results[key]=result;prepStage(key,typeof state==='function'?state(result):state,summary(result));return result};
- await stage('satellite','Loading missing Earth Engine tiles…',()=>loadEE(p),$('noee').checked?'warn':'done',()=>$('noee').checked?'Skipped for testing; real raster data not loaded':G.gaps||'Rasters loaded');G.params=p;
- const barriers=await stage('barriers','Loading road/river lines…',loadLinearBarriers,r=>r.skipped?'warn':'done',r=>r.skipped?'Skipped by user — no road/river line barriers':`${r.roads} roads · ${r.rivers} waterways · ${r.cells} blocked cells`);
- await stage('weather','Loading missing Open-Meteo weather…',()=>loadMet(p),'done',()=>`${G.M.np} points · ${G.M.len} hours`);
- await stage('field','Applying optional observations…',async()=>{await ensureSpeciesLookups();applyFieldLayers()},'done',()=>FIELD.weather.length||FIELD.species.length?'Optional observations applied':'No optional observations; existing data used');
- const f=await stage('fire','Loading missing detections…',()=>loadFire(p),r=>r?.seeds?'done':'warn',r=>r?.seeds?`${r.seeds} ignition points`:'No burnable detections; choose fire dates or use map ignition');
- resetState(p.seedR);drawBG();prepStage('fire',f?.seeds?'done':'warn',f?.seeds?`${f.seeds} ignition points`:'No burnable detections; choose fire dates or use map ignition');if(prepSignature(P())!==prepCheckpoint.key||G!==prepCheckpoint.grid)throw Error('Settings or area changed during preparation. Press Prepare data for the current settings.');DATA_READY=true;$('run').disabled=false;$('retryprep').hidden=true;checklist([[true,`Area: ${G.N} cells`,`क्षेत्र: ${G.N} सेल`],[!$('noee').checked,`Satellite and terrain: ${G.gaps||'loaded'}`,'उपग्रह और भूभाग: '+(G.gaps||'लोड')],[!barriers.skipped,barriers.skipped?'Road/river barriers skipped by user':`Road/river barriers: ${barriers.roads} roads, ${barriers.rivers} waterways`,barriers.skipped?'सड़क/नदी अवरोध उपयोगकर्ता ने छोड़ दिए':`सड़क/नदी अवरोध: ${barriers.roads} सड़कें, ${barriers.rivers} जलधाराएँ`],[!!G.M,`Weather: ${G.M?.np||0} points`,`मौसम: ${G.M?.np||0} बिंदु`],[!!f?.seeds,`Ignition: ${f?.seeds||0} points`,`इग्निशन: ${f?.seeds||0} बिंदु`]]);map.fitBounds([[G.s,G.w],[G.n,G.e]]);
- log(`Ready: ${G.nx} × ${G.ny} cells of ${p.cell} m, weather lattice ${G.M.nlx} × ${G.M.nly} (${G.M.sp.toFixed(1)} km). ${f?`${f.nd} FIRMS detections, ${f.seeds} ignition points.`:''} ${G.gaps||''}${f&&!f.nd?' No FIRMS detections in this window: use "Show fire history" to find real fire dates.':''}`)}
- catch(e){if(signal.aborted)return;DATA_READY=false;prepStage(prepCurrent||'area','failed',String(e.message||e));checklist([[!!G,'Area of interest','अध्ययन क्षेत्र'],[false,`Preparation incomplete: ${e.message||e}`,`तैयारी अधूरी: ${e.message||e}`]]);log('Error: '+(e.message||e));note('ERR','stack: '+String(e.stack||'').split('\n').slice(0,3).join(' | '))}
- finally{if(!signal.aborted){prepStop();b.disabled=false;$('retryprep').disabled=false;$('retryprep').hidden=DATA_READY||!G||G!==prepCheckpoint?.grid||prepSignature(P())!==prepCheckpoint?.key;$('run').disabled=!DATA_READY}}}
+// Each stage owns only its actual data dependencies; model-only parameters never invalidate downloads.
+function preparationKeys(p=P()){
+ return WorkflowData.keys(p,{aoi:AOI,test:$('noee').checked,events:MODE==='hind'?selectedEvents():[],lines:WorkflowData.token(USER_LINES),skip:BARRIER_SKIP,barrierSource:$('ohsomekey').value.trim()?'ohsome':'overpass',
+  observations:FIELD.weather,weatherMethod:$('weathermethod').value,species:[speciesNames(),FIELD.species],litter:$('litter').checked,litterClass:$('litterclass').value,
+  selection:[...POINT_SEL].sort(),manual:MANUAL_IGNITIONS,rows:[WorkflowData.token(FILEROWS),WorkflowData.token(HROWS)],sources:chosenSources(),confidence:$('hiconf').checked});
+}
+function prepSignature(p){return JSON.stringify(preparationKeys(p))}
+function refreshIgnitionMask(p){if(!G)return;for(let i=0;i<G.N;i++)if(G.inside[i])G.fuelMask[i]=hasFuel(G.nw[i],G.nd[i],p.cureThr)?1:0;refreshFuel(p)}
+function updateWorkflowControls(){
+ const ready=!!G&&PREP_STAGES.every(([k])=>['done','warn'].includes(prepStates[k]?.state));DATA_READY=ready;
+ $('run').disabled=prepActive||calActive||(!running&&!ready);$('rerunbaseline').hidden=!baselineHasRun;$('rerunbaseline').disabled=prepActive||running||calActive||!G;
+ $('retryprep').hidden=ready||!G||G!==prepCheckpoint?.grid;$('retryprep').disabled=prepActive||running||calActive;
+}
+function reconcilePreparation(){
+ if(!G||!prepCheckpoint)return [];
+ const keys=preparationKeys(),old=prepCheckpoint.desired||{},changed=Object.keys(keys).filter(k=>keys[k]!==old[k]);
+ if(keys.area!==prepCheckpoint.keys.area){dropGrid();prepStates={};return ['area']}
+ for(const [k]of PREP_STAGES)if(k!=='area'&&(prepCheckpoint.keys[k]!==keys[k]||k==='weather'&&G.weatherExpires<=Date.now())){
+  if(['done','warn','active'].includes(prepStates[k]?.state)){prepStates[k]={state:'waiting',detail:bilingual('Inputs updated · matching cached data will be reused','इनपुट बदले · मेल खाता कैश उपयोग होगा'),fraction:0};delete prepCheckpoint.keys[k];delete prepCheckpoint.results[k]}
+ }
+ if(changed.length){BASE=CAL=CANDIDATE=null;SEARCH=[];REFS=[];OPTRESULT=HOLDRESULT=null;OPTELIGIBLE=false;$('acceptcal').disabled=true}
+ prepCheckpoint.desired=keys;prepCheckpoint.key=JSON.stringify(keys);updateWorkflowControls();renderPrep();return changed;
+}
+function workflowChanged(){
+ if(!workflowInitialized)return;
+ clearTimeout(workflowTimer);
+ if(prepActive||running||calActive){const checkpoint=prepCheckpoint;cancelWorkflow();prepCheckpoint=checkpoint}
+ EVENTS=MODE==='hind'?selectedEvents():[];let changed;try{changed=reconcilePreparation()}catch(e){DATA_READY=false;$('run').disabled=true;$('prepstatus').textContent='Choose valid ignition and environmental dates.';return log('Error: '+e.message)}
+ if(G&&changed.length)workflowTimer=setTimeout(()=>{workflowTimer=null;if(G&&!prepActive&&!running&&!calActive)prepareData(true,changed)},180);
+}
+async function prepareData(retry=false,only=null){
+ if(prepActive||running||calActive)return;clearTimeout(workflowTimer);workflowTimer=null;
+ const signal=DataIO.signal,b=$('prep');
+ try{
+  if(!AOI){checklist([[false,'Area of interest missing','अध्ययन क्षेत्र नहीं मिला']]);return log('Draw or load an area first.')}
+  if(!retry){if(MODE!=='hind')liveStart=Date.now()+(MODE==='fore'?2*36e5:0);syncTemporal()}
+  EVENTS=MODE==='hind'?selectedEvents():[];reconcilePreparation();const p=P();
+  if(!G||G!==prepCheckpoint?.grid){
+   BASE=CAL=CANDIDATE=null;SEARCH=[];REFS=[];baselineHasRun=false;
+   prepCheckpoint={key:'',keys:{},desired:{},results:{},grid:null};prepStart();const bb=drawn.getBounds();
+   build({w:bb.getWest(),e:bb.getEast(),s:bb.getSouth(),n:bb.getNorth()},p,AOI);mkOverlays();prepCheckpoint.grid=G;
+   prepCheckpoint.keys.area=preparationKeys(p).area;prepStage('area','done',`${G.nx} × ${G.ny} · ${G.N.toLocaleString()} cells`);only=null;
+  }else prepStart(true);
+  const checkpoint=prepCheckpoint;checkpoint.desired=preparationKeys(p);checkpoint.key=JSON.stringify(checkpoint.desired);b.disabled=true;$('run').disabled=true;$('rerunbaseline').disabled=true;$('retryprep').disabled=true;DATA_READY=false;saveKeys();
+  const targets=only?new Set(Array.isArray(only)?only:[only]):null;
+  if(targets&&(targets.has('satellite')||targets.has('barriers')))targets.add('fire');
+  const done=k=>['done','warn'].includes(prepStates[k]?.state);
+  const stage=async(key,dependencies,detail,work,state,summary)=>{
+   if(done(key))return checkpoint.results[key];if(targets&&!targets.has(key))return;
+   if(dependencies.some(k=>!done(k))){prepStage(key,'waiting','Waiting for '+dependencies.filter(k=>!done(k)).join(', '));return}
+   prepStage(key,'active',detail);
+   try{const result=await DataIO.wait(work(),signal);DataIO.check(signal);if(G!==checkpoint.grid||prepCheckpoint!==checkpoint)throw Error('Preparation inputs changed.');
+    checkpoint.keys[key]=preparationKeys(P())[key];checkpoint.results[key]=result;prepStage(key,typeof state==='function'?state(result):state,summary(result));return result;
+   }catch(e){DataIO.check(signal);prepStage(key,'failed',String(e.message||e));note('ERR',key+': '+(e.message||e));}
+  };
+  await stage('satellite',[],'Loading only missing satellite bands/tiles…',()=>loadEE(p),$('noee').checked?'warn':'done',()=>G.gaps||'Rasters loaded');G.params=p;
+  await stage('barriers',[],'Loading missing road/river geometry…',loadLinearBarriers,r=>r.skipped?'warn':'done',r=>r.skipped?'Skipped by user — no road/river line barriers':`${r.roads} roads · ${r.rivers} waterways · ${r.cells} blocked cells`);
+  await stage('weather',[],'Loading only missing weather hours…',()=>loadMet(p),'done',()=>`${G.M.np} points · ${G.M.len} hours · cached for reuse`);
+  await stage('field',[],'Applying optional observations…',async()=>{await ensureSpeciesLookups();applyFieldLayers()},'done',()=>FIELD.weather.length||FIELD.species.length?'Optional observations applied':'No optional observations; existing data used');
+  await stage('fire',['satellite','barriers'],'Integrating selected ignition points…',async()=>{refreshIgnitionMask(p);return loadFire(p)},r=>r?.seeds?'done':'warn',r=>r?.seeds?`${r.seeds} selected ignition inputs · ${G.skipped.length} blocked`:'No selected burnable ignitions · select detections or click the map');
+  DataIO.check(signal);checkpoint.desired=preparationKeys();checkpoint.key=JSON.stringify(checkpoint.desired);
+  updateWorkflowControls();if(DATA_READY){resetState(p.seedR);drawBG();log(`Ready: ${G.N} cells · ${G.seedSpec.length} selected ignition inputs. Existing data retained.`)}else log('Preparation incomplete. Completed datasets are retained; retry the indicated steps.');
+  checklist(PREP_STAGES.map(([k,en,hi])=>[done(k),`${en}: ${prepStates[k]?.detail||'pending'}`,`${hi}: ${prepStates[k]?.detail||'अधूरा'}`]));
+ }catch(e){if(!signal.aborted){prepStage(prepCurrent||'area','failed',String(e.message||e));log('Error: '+(e.message||e))}}
+ finally{if(!signal.aborted){prepStop();b.disabled=false;updateWorkflowControls()}}
+}
 $('prep').onclick=()=>prepareData();
 $('retryprep').onclick=()=>prepareData(true);
-map.on('click',ev=>{if(DATA_READY&&G&&G.im&&!running){const i=cellAt(ev.latlng.lat,ev.latlng.lng);if(i>=0){G.centers.push(i);igniteDisc(i,+$('seedr').value||60);G.ctx.putImageData(G.im,0,0)}}});
+map.on('click',ev=>{if(G&&G.im&&!running&&!calActive){const i=cellAt(ev.latlng.lat,ev.latlng.lng);if(i>=0&&G.inside[i]){MANUAL_IGNITIONS.push({la:ev.latlng.lat,lo:ev.latlng.lng});renderDetections();workflowChanged()}}});
 
 /* ================= background layers ================= */
 const RAMP=[[40,60,130],[50,160,140],[250,225,60],[225,50,30]],ramp=t=>{t=clamp(t,0,1)*3;const k=Math.min(2,t|0),f=t-k,a=RAMP[k],b=RAMP[k+1];return[a[0]+(b[0]-a[0])*f,a[1]+(b[1]-a[1])*f,a[2]+(b[2]-a[2])*f]};
@@ -662,13 +738,13 @@ function charts(){CH.forEach(c=>c&&c.destroy());Chart.defaults.color='#c9b8b0';C
    {y:ax('left','°C','#e11d2e'),y1:ax('right','% RH','#38bdf8',{min:0,max:100})})]}
 
 /* ================= run ================= */
-function clearHist(){hdots.clearLayers();HROWS=null;HBY={};SEL.clear();SKIPN=0;const h=$('hist');if(h)h.innerHTML=''}
-$('reset').onclick=()=>{DataIO.reset();$('run').textContent=bilingual('Run baseline simulation','मूल सिमुलेशन चलाएँ');prepActive=false;$('prep').disabled=false;$('retryprep').disabled=false;$('hbtn').disabled=false;$('previewcure').disabled=false;prepCheckpoint=null;PREP_CACHE.clear();$('retryprep').hidden=true;running=false;videoGeneration++;if(rec&&rec.state!=='inactive')try{rec.stop()}catch(e){note('ERR','Video stop on reset: '+e.message)}rec=null;if(CALWORKER){CALWORKER.terminate();CALWORKER=null;CALCANCEL?.();CALCANCEL=null}clearPreview();dropGrid();drawn.clearLayers();AOI=null;localStorage.removeItem('wf_aoi');clearHist();dots.clearLayers();H=null;EVENTS=[];METRICS=[];RUNS=[];PROB=null;BASE=CAL=CANDIDATE=null;SEARCH=[];REFS=[];FILEROWS=null;USER_LINES=null;BARRIER_SKIP=false;W=null;WX_CACHE.clear();$('aoifile').value='';$('barrierfile').value='';$('barrierstatus').textContent=bilingual('If online geometry is unavailable, supply road/river LineString GeoJSON here.','ऑनलाइन geometry उपलब्ध न हो तो सड़क/नदी LineString GeoJSON यहाँ दें।');$('firmsfile').value='';clearFieldInputs();
+function clearHist(){hdots.clearLayers();HROWS=null;HBY={};SEL.clear();POINT_SEL.clear();DETECTIONS=[];MANUAL_IGNITIONS=[];EVENTS=[];SKIPN=0;renderDetections();const h=$('hist');if(h)h.innerHTML=''}
+$('reset').onclick=async()=>{if(!confirm(bilingual('Reset the entire workflow, selections, parameters and downloaded cache? API keys and sign-in will be kept.','पूरा वर्कफ़्लो, चयन, पैरामीटर और डाउनलोड कैश मिटाएँ? API कुंजी और साइन-इन सुरक्षित रहेंगे।')))return;clearTimeout(workflowTimer);workflowTimer=null;baselineHasRun=false;workflowInitialized=false;DataIO.reset();const clearing=idb('clear');$('run').textContent=bilingual('Run baseline simulation','मूल सिमुलेशन चलाएँ');prepActive=false;$('prep').disabled=false;$('retryprep').disabled=false;$('hbtn').disabled=false;$('previewcure').disabled=false;prepCheckpoint=null;PREP_CACHE.clear();$('retryprep').hidden=true;running=false;videoGeneration++;if(rec&&rec.state!=='inactive')try{rec.stop()}catch(e){note('ERR','Video stop on reset: '+e.message)}rec=null;if(CALWORKER){CALWORKER.terminate();CALWORKER=null;CALCANCEL?.();CALCANCEL=null}clearPreview();dropGrid();drawn.clearLayers();AOI=null;localStorage.removeItem('wf_aoi');clearHist();dots.clearLayers();H=null;EVENTS=[];METRICS=[];RUNS=[];PROB=null;BASE=CAL=CANDIDATE=null;SEARCH=[];REFS=[];FILEROWS=null;USER_LINES=null;BARRIER_SKIP=false;W=null;WX_CACHE.clear();$('aoifile').value='';$('barrierfile').value='';$('barrieronlinereset').hidden=true;$('fireonlinereset').hidden=true;$('barrierstatus').textContent=bilingual('If online geometry is unavailable, supply road/river LineString GeoJSON here.','ऑनलाइन geometry उपलब्ध न हो तो सड़क/नदी LineString GeoJSON यहाँ दें।');$('firmsfile').value='';clearFieldInputs();
  for(const id of ['sensor','gap','hiconf','ww0','ww1','dw0','dw1','wsp','noee','dt','r0','tb','seedr','look','ignmode','moistScale','rainScale','usebi','bxsel','bthr','pre','post','tol','runs','lop','lyr','calbudget','calrepeats','calruns','customruns']){const e=$(id);if(e.type==='checkbox')e.checked=e.defaultChecked;else e.value=e.tagName==='SELECT'?([...e.options].find(o=>o.defaultSelected)||e.options[0]).value:e.defaultValue}
- for(const id of ['nm0','nm1','wi0','wi1','lst0','lst1','met0','met1'])$(id).value='';$('cell').value='30';$('fh1').value=isoD(Date.now());$('fh0').value=addD($('fh1').value,-365);$('hs').value='2026-04-10';temporalAnchor=$('hs').value;$('hh').value='0';$('hours').value='12';document.querySelectorAll('.firesrc').forEach((x,i)=>x.checked=i===0);
+ for(const id of ['nm0','nm1','wi0','wi1','lst0','lst1','met0','met1'])$(id).value='';$('cell').value='30';$('fh1').value=isoD(Date.now());$('fh0').value=addD($('fh1').value,-365);$('hs').value='2026-04-10';temporalAnchor=$('hs').value;seasonTemplates={};$('hh').value='0';$('hours').value='12';document.querySelectorAll('.firesrc').forEach((x,i)=>x.checked=i===0);
  $('dem').value='cop';$('curethr').value='0.10';$('curevalue').textContent='0.10';document.querySelectorAll('#weights input').forEach(e=>e.value=e.defaultValue);prepActive=false;prepStates={};prepCurrent='';$('prepsteps').replaceChildren();$('prepstatus').textContent='';$('prepprogress').value=0;
  document.querySelector('.tabs button[data-m=now]').click();$('hist').textContent='';$('checklist').textContent='';for(const id of ['val','comparison','candidateTable','paramCompare','calEvents','obsstatus','calstatus','finalstatus','loadprogress','calLive','holdoutComparison','decision'])$(id).innerHTML='';$('calprogress').value=0;$('tunerows').innerHTML='';renderTune();OPTRESULT=HOLDRESULT=null;OPTELIGIBLE=false;$('acceptcal').disabled=true;updatePlan();$('stopcal').hidden=true;$('autocal').disabled=false;$('legend').textContent='';VIDEO={baseline:null,calibrated:null};for(const id of ['basevideo','calvideo'])$(id).hidden=true;$('videostatus').textContent=bilingual('After a run finishes, its video will be available here.','रन पूरा होने पर उसकी वीडियो यहाँ डाउनलोड की जा सकती है।');CH.forEach(c=>c?.destroy());CH=[];EXCH.forEach(c=>c?.destroy());EXCH=[];document.querySelectorAll('#resultsbox canvas').forEach(c=>c.getContext('2d').clearRect(0,0,c.width,c.height));
- document.querySelectorAll('aside details').forEach(d=>d.open=false);$('areabox').open=true;log('Reset complete. API keys and sign-in retained; draw or load an area to start again.')}
+ document.querySelectorAll('aside details').forEach(d=>d.open=false);$('areabox').open=true;await clearing;workflowInitialized=true;updateWorkflowControls();log('Reset complete. Workflow and downloaded cache cleared; API keys and sign-in retained.')}
 function diag(p){try{const i=G.act[0],x=i%G.nx,y=(i/G.nx)|0;setWeather(0);wxAt(x,y,G.z[i]);let bs=0,n=0;for(let j=0;j<G.N;j+=7)if(G.inside[j]&&!NF[G.lc[j]]){bs+=G.base[j];n++}
  const b=bs/Math.max(1,n)/255,R=p.R0*b*fWx();
  note(R<.05?'WARN':'OK',`Spread check at t=0: wind ${wV.toFixed(1)} m/s, T ${wT.toFixed(1)} C, RH ${Math.round(wRH)}%, rain index ${wA.toFixed(1)} mm. Factors: RH ${fRH(wRH).toFixed(2)}, T ${fT(wT).toFixed(2)}, rain ${fRain(wA).toFixed(2)}, mean fuel×moisture ${b.toFixed(2)}. Mean R about ${R.toFixed(2)} m/min (before wind and slope), so about ${(R*p.hours*60).toFixed(0)} m of front travel in ${p.hours} h.${R<.05?' Very slow: raise R0 or check fuel/moisture layers.':''}`)}catch(e){note('WARN','diag failed: '+e.message)}}
@@ -776,7 +852,17 @@ function stratifiedPoints(ref,valid,count=100){const groups=[[],[]],spacing=Math
 function installLanguage(){const apply=()=>{document.documentElement.lang=LANG==='hi'?'hi':'en';document.querySelectorAll('[data-hi]').forEach(e=>{if(!e.dataset.en)e.dataset.en=e.textContent;e.textContent=LANG==='hi'?e.dataset.hi:e.dataset.en});$('lang').textContent=LANG==='hi'?'English':'हिन्दी';if(HROWS)renderHist();if($('tunerows')?.children.length)renderTune();if(EVENTS.length&&$('holdout'))renderCalibrationEvents();if(Object.keys(prepStates).length)renderPrep()};$('lang').onclick=()=>{LANG=LANG==='en'?'hi':'en';apply()};apply();if(!$('firms').value&&!eeReady){$('accounts').open=true;$('modebox').open=false}else{$('accounts').open=false;$('modebox').open=true}}
 installLanguage();
 syncTemporal();
-for(const id of ['hs','hh'])$(id).addEventListener('change',()=>{SEL.clear();EVENTS=[];syncTemporal();clearPreview();dropGrid();if(HROWS)renderHist()});
-$('hours').addEventListener('change',()=>{syncTemporal();if(prepActive||running||calActive||$('usebi').checked&&!EVENTS.length)dropGrid()});
-for(const id of ['nm0','nm1','wi0','wi1','met0','met1','pre','post','usebi','bxsel'])$(id).addEventListener('change',()=>{if(id==='met0'||id==='met1')syncTemporal();clearPreview();dropGrid()});
+for(const id of ['hs','hh'])$(id).addEventListener('change',()=>{if(id==='hs'){POINT_SEL.clear();syncSelectedDays();renderHist()}syncTemporal();clearPreview();workflowChanged()});
+$('hours').addEventListener('change',()=>{syncTemporal();workflowChanged()});
+for(const id of ['nm0','nm1','wi0','wi1','met0','met1','pre','post','usebi','bxsel','wsp','noee','ignmode','seedr','look','hiconf','weathermethod','litter','litterclass','ohsomekey'])$(id).addEventListener('change',()=>{if(id==='met0'||id==='met1')syncTemporal();clearPreview();workflowChanged()});
+document.querySelectorAll('.firesrc').forEach(e=>e.addEventListener('change',()=>{HROWS=null;workflowChanged()}));
+workflowInitialized=true;renderDetections();
+const runBaselineEngine=$('run').onclick;
+async function runPreparedBaseline(){
+ if(running)return runBaselineEngine();if(prepActive||calActive)return;
+ clearTimeout(workflowTimer);workflowTimer=null;try{reconcilePreparation()}catch(e){DATA_READY=false;$('run').disabled=true;return log('Error: choose valid ignition and environmental dates.')}if(!DATA_READY)await prepareData(true);if(!DATA_READY)return;
+ // This calls the existing baseline model, not calibration or optimization.
+ const execution=runBaselineEngine();updateWorkflowControls();await execution;if(BASE)baselineHasRun=true;updateWorkflowControls();
+}
+$('run').onclick=runPreparedBaseline;$('rerunbaseline').onclick=runPreparedBaseline;
 document.querySelectorAll('aside details').forEach(d=>d.addEventListener('toggle',()=>{if(d.open)document.querySelectorAll('aside details').forEach(other=>{if(other!==d)other.open=false})}));

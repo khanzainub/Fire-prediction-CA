@@ -1,0 +1,61 @@
+// Real workflow/model functions with explicitly synthetic responses; never used by the deployed app.
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
+const root=path.join(__dirname,'..'),source=fs.readFileSync(path.join(root,'app.js'),'utf8');
+const cut=(a,b)=>source.slice(source.indexOf(a),source.indexOf(b,source.indexOf(a)));
+const data=require('../workflow.js');
+const p={mode:'hind',start:Date.parse('2024-04-10T17:00Z'),hours:2,cell:30,sensor:'l',dem:'cop',ww0:'2023-10-01',ww1:'2023-11-30',dw0:'2024-03-01',dw1:'2024-04-30',nm0:'2024-03-11',nm1:'2024-04-09',wi0:'2024-03-11',wi1:'2024-04-09',lst0:'2024-02-25',lst1:'2024-04-09',bi:false,pre:45,post:45,bx:'dnbr',spc:5,cureThr:.1,seedR:30,ignmode:'fixed',look:24,dt:2,R0:10,tb:20,moistScale:1,rainScale:1,wCure:1,wNdmi:1,wSoil:1,wSlope:1,wElev:1,wWind:1,wWindDir:1,wTemp:1,wRh:1,wRain:1,wLST:1};
+function ctx(){const elements=new Map(),markers=[];function el(){return{value:'',checked:false,disabled:false,hidden:false,textContent:'',innerHTML:'',children:[],append(...a){this.children.push(...a)},replaceChildren(...a){this.children=a},setAttribute(){},classList:{add(){}},querySelector(){return {disabled:false}},getContext(){return{createImageData(w,h){return{data:new Uint8ClampedArray(w*h*4)}},putImageData(){},clearRect(){}}}}}
+const $=id=>{if(!elements.has(id))elements.set(id,el());return elements.get(id)};
+$('weathermethod').value='bias';$('litterclass').value='high';$('gap').value='1';$('firms').value='fixture';
+const c=vm.createContext({console,AbortController,DOMException,URL,Date,setTimeout,clearTimeout,structuredClone,WorkflowData:data,PARAM:{...p},$,confirm:()=>false,document:{createElement:el,querySelectorAll(){return[]}},L:{circleMarker(point,style){const m={point,style,events:{},bindTooltip(){return this},on(k,fn){this.events[k]=fn;return this},addTo(){return this}};markers.push(m);return m}}});
+c.markers=markers;
+vm.runInContext(fs.readFileSync(path.join(root,'data-io.js'),'utf8')+fs.readFileSync(path.join(root,'temporal.js'),'utf8'),c);
+vm.runInContext(`
+var G=null,AOI=[[[[79.44,29.38],[79.443,29.38],[79.443,29.383],[79.44,29.383],[79.44,29.38]]]],MODE='hind',EVENTS=[],HROWS=null,HBY={},SEL=new Set(),POINT_SEL=new Set(),DETECTIONS=[],MANUAL_IGNITIONS=[],FILEROWS=[],eeReady=false,FIELD={weather:[],species:[]},USER_LINES=null,BARRIER_SKIP=false;
+var prepActive=false,prepCurrent='',prepStarted=0,prepStates={},prepCheckpoint=null,DATA_READY=false,workflowInitialized=true,workflowTimer=null,baselineHasRun=false,running=false,calActive=false,BASE=null,CAL=null,CANDIDATE=null,SEARCH=[],REFS=[],H=null,PROB=null,METRICS=[],RUNS=[],OPTRESULT=null,HOLDRESULT=null,OPTELIGIBLE=false,RUN_KIND='baseline',VIDEO={},rec=null,LANG='en';
+const MISSING=-32000,MAXC=4e6,TS=256,NF=new Uint8Array(256);[50,60,70,80].forEach(k=>NF[k]=1);
+const PREP_STAGES=[['area','Area'],['satellite','Satellite'],['barriers','Barriers'],['weather','Weather'],['field','Field'],['fire','Fire']],PREP_CACHE=new Map(),LOGS=[];
+const clamp=(x,a,b)=>Math.min(b,Math.max(a,x)),isoD=x=>new Date(x).toISOString().slice(0,10),addD=(d,n)=>isoD(Date.parse(d)+n*864e5),daysBetween=(a,b)=>Math.round((Date.parse(b)-Date.parse(a))/864e5),startMs=p=>p.start,P=()=>({...PARAM}),speciesNames=()=>[],chosenSources=()=>['VIIRS_SNPP'];
+const drawn={getBounds:()=>({getWest:()=>79.44,getEast:()=>79.443,getSouth:()=>29.38,getNorth:()=>29.383,contains:()=>true})},map={events:{},on(k,f){this.events[k]=f}},hdots={clearLayers(){}},dots={clearLayers(){}};
+function bilingual(en){return en}function log(m){LOGS.push(m)}function note(k,m){LOGS.push(k+': '+m)}function saveKeys(){}function checklist(){}function syncTemporal(){}function applySel(){}function clearPreview(){}function drawBG(){}function applyFieldLayers(){}async function ensureSpeciesLookups(){}function applyFieldWeather(m){return m}function openStep(){}function charts(){}function validate(){}function renderCalibrationEvents(){}function vstart(){}function vframe(){}async function vfinish(){}const raf=()=>Promise.resolve(),sleep=raf;
+function cancelWorkflow(){DataIO.reset();running=false;prepActive=false;prepCheckpoint=null}function dropGrid(){cancelWorkflow();G=null;DATA_READY=false}
+const cache=new Map();async function idb(method,k,v){if(method==='get')return cache.get(k);if(method==='put'){cache.set(k,v);return v}if(method==='keys')return [...cache.keys()];if(method==='clear')cache.clear()}
+function mkOverlays(){G.ctx=$('canvas').getContext();G.im=G.ctx.createImageData(G.nx,G.ny)}
+var counts={satellite:0,barriers:0,weather:0,tiles:0,fire:0},failSatellite=false,failBarrier=true,failWeather=false,holdWeather=null;
+async function loadEE(p){counts.satellite++;if(failSatellite)throw Error('Satellite timeout');for(const [k,v]of Object.entries({nw:8000,nd:2000,nm:2000,sm:2000,wi:-1000,lst:2500,lc:30,z:300,recent:6000,bsi:0}))G[k].fill(v);G.variation=new Float32Array(G.N).fill(1);G.lstMean=25;G.gaps='Controlled test fixture';}
+async function loadLinearBarriers(){counts.barriers++;if(failBarrier)throw Error('Road/river timeout');G.lineBarrier.fill(0);if(USER_LINES)G.lineBarrier[0]=1;return{roads:1,rivers:1,cells:USER_LINES?1:0}}
+async function getDetections(){counts.fire++;return FILEROWS||[]}
+async function getJ(url){counts.weather++;if(holdWeather)await holdWeather;if(failWeather)throw Error('Weather timeout');const u=new URL(url),a=u.searchParams,n=a.get('latitude').split(',').length,first=Date.parse((a.get('start_hour')||a.get('start_date')+'T00:00')+'Z'),last=Date.parse((a.get('end_hour')||a.get('end_date')+'T23:00')+'Z'),time=[];for(let t=first;t<=last;t+=36e5)time.push(new Date(t).toISOString().slice(0,16));return Array.from({length:n},()=>({elevation:300,hourly:{time,temperature_2m:time.map(()=>25),relative_humidity_2m:time.map(()=>40),precipitation:time.map(()=>0),wind_speed_10m:time.map(()=>2),wind_direction_10m:time.map(()=>90)}}))}
+`,c);
+for(const [a,b]of [['function renderPrep(', 'function openStep('],['// ===MODEL-START===','// ===MODEL-END==='],['function baseOf(', 'function previewGrid('],['function refreshFuel(', '/* ================= optional observations'],['const WX_CACHE=', '/* ================= FIRMS fire detections'],['function installDetections(', 'function applySel('],['function preparationKeys(', '/* ================= background layers'],['function eventStart(', 'const weight='],['function record(', '/* Additional analyses']])vm.runInContext(cut(a,b),c);
+vm.runInContext(`const runBaselineEngine=$('run').onclick;`+cut('async function runPreparedBaseline(',"$('run').onclick=runPreparedBaseline;")+"$('run').onclick=runPreparedBaseline;$('rerunbaseline').onclick=runPreparedBaseline;",c);
+return c}
+(async()=>{
+const c=ctx(),run=x=>vm.runInContext(x,c);
+await run('prepareData()');assert.equal(run('prepStates.barriers.state'),'failed');assert.equal(run('prepStates.weather.state'),'done');assert.equal(run('DATA_READY'),false);
+const sat=run('counts.satellite'),wx=run('counts.weather');run('failBarrier=false');await run("prepareData(true,'barriers')");assert.equal(run('DATA_READY'),true);assert.equal(run('counts.satellite'),sat);assert.equal(run('counts.weather'),wx);
+console.log('PASS partial barrier failure does not block weather; targeted retry preserves completed stages');
+run(`FILEROWS=[{la:29.381,lo:79.441,date:'2024-04-10',t:PARAM.start,b:'VIIRS'},{la:29.382,lo:79.442,date:'2024-04-10',t:PARAM.start+36e5,b:'VIIRS'}];installDetections(FILEROWS,true);POINT_SEL.add(WorkflowData.detection(DETECTIONS[0]));syncSelectedDays();reconcilePreparation()`);
+await run("prepareData(true,'fire')");assert.equal(run('G.seedSpec.length'),1);assert.equal(run('DETECTIONS.length'),2);assert.equal(run('G.seedSpec[0].i===cellAt(DETECTIONS[0].la,DETECTIONS[0].lo)'),true);assert.equal(run("$('ignitionstatus').textContent.includes('1/2')"),true);
+const visible=c.markers.slice(-2);assert.equal(visible[0].style.radius,6);assert.equal(visible[1].style.radius,3);
+await run("$('run').onclick()");assert.equal(run('!!BASE'),true,run('LOGS.slice(-5).join("\\n")'));assert.equal(run('BASE.state.some(v=>v===2)'),true);assert.equal(run("$('rerunbaseline').hidden"),false);
+const counts=JSON.stringify(run('counts'));run('PARAM.R0=12;PARAM.tb=18');await run("$('rerunbaseline').onclick()");assert.equal(run('BASE.p.R0'),12);assert.equal(JSON.stringify(run('counts')),counts);
+console.log('PASS all detections visible, only selected point seeds, real baseline reruns after model changes without downloads');
+run('POINT_SEL.clear();syncSelectedDays();reconcilePreparation()');await run("prepareData(true,'fire')");assert.equal(run('G.seedSpec.length'),0);assert.equal(run('G.centers.length'),0);assert.equal(run('G.obs.some(Boolean)'),false);
+run("map.events.click({latlng:{lat:29.381,lng:79.441}})");await run('prepareData(true)');assert.equal(run('G.seedSpec.length'),1);await run("$('rerunbaseline').onclick()");assert.equal(run('!!BASE'),true);
+console.log('PASS deselect-all leaves no hidden ignition; manual map ignition is included on repeat runs');
+const weather=run('G.M'),satellite=run('G.nw'),before=JSON.stringify(run('counts'));run('USER_LINES=[{geometry:[]}];workflowChanged()');await run("prepareData(true,'barriers')");assert.strictEqual(run('G.M'),weather);assert.strictEqual(run('G.nw'),satellite);assert.equal(run('G.lineBarrier[0]'),1);assert.equal(run('counts.weather'),wx);
+run('USER_LINES=null;workflowChanged()');await run("prepareData(true,'barriers')");assert.equal(run('G.lineBarrier[0]'),0);
+console.log('PASS geometry replacement removes old barriers and retains satellite/weather arrays');
+run('PARAM.hours=1;reconcilePreparation()');await run('prepareData(true)');assert.equal(run('counts.weather'),wx);assert.equal(run('counts.satellite'),sat);assert.equal(run('G.M.len'),74);
+run("PARAM.lst0='2024-03-01';reconcilePreparation()");assert.equal(run('prepStates.weather.state'),'done');await run("prepareData(true,'satellite')");assert.equal(run('counts.weather'),wx);
+console.log('PASS shorter duration reuses hourly cache; LST change leaves weather prepared');
+const barriers=run('counts.barriers');run("PARAM.start=Date.parse('2023-04-10T17:00Z');PARAM.ww0='2022-10-01';PARAM.ww1='2022-11-30';PARAM.dw0='2023-03-01';PARAM.dw1='2023-04-30';PARAM.nm0='2023-03-11';PARAM.nm1='2023-04-09';PARAM.wi0='2023-03-11';PARAM.wi1='2023-04-09';PARAM.lst0='2023-03-01';PARAM.lst1='2023-04-09';reconcilePreparation()");assert.equal(run('prepStates.barriers.state'),'done');await run('prepareData(true)');assert.equal(run('counts.barriers'),barriers);assert.equal(run('G.M.times[72]'),'2023-04-10T17:00');
+console.log('PASS changed ignition year updates weather/satellite dependencies but retains barriers');
+run("PARAM.hours=2;reconcilePreparation();holdWeather=new Promise(r=>globalThis.releaseWeather=r);WX_CACHE.clear();cache.clear()");const pending=run("prepareData(true,'weather')");await new Promise(r=>setTimeout(r,5));run('PARAM.hours=1;workflowChanged();releaseWeather();holdWeather=null');await pending;await run('prepareData(true)');assert.equal(run('DATA_READY'),true);assert.equal(run('G.M.len'),74);
+console.log('PASS settings changed during retrieval cancel stale integration and recover on the same grid');
+// Reset uses the actual handler, with both confirmation decisions.
+run(`function clearHist(){DETECTIONS=[];POINT_SEL.clear();MANUAL_IGNITIONS=[];HROWS=null;SEL.clear();HBY={}}function clearFieldInputs(){FIELD.weather=[];FIELD.species=[]}function renderTune(){}function updatePlan(){}var videoGeneration=0,CALWORKER=null,CALCANCEL=null,temporalAnchor='',seasonTemplates={},CH=[],EXCH=[];var localStorage={removeItem(){}};drawn.clearLayers=()=>{};document.querySelector=()=>({click(){}});`);
+run(cut("$('reset').onclick=",'function diag('));const saved=run('G');await run("$('reset').onclick()");assert.strictEqual(run('G'),saved);c.confirm=()=>true;await run("$('reset').onclick()");assert.equal(run('G'),null);assert.equal(run('cache.size'),0);assert.equal(run('POINT_SEL.size+MANUAL_IGNITIONS.length'),0);assert.equal(run('baselineHasRun'),false);
+console.log('PASS Reset cancellation preserves state; confirmed Reset clears workflow, selections and cached downloads');
+})().catch(e=>{console.error(e);process.exitCode=1});

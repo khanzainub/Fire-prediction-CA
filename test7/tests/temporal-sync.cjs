@@ -44,10 +44,11 @@ const args={identity:['small Nainital test grid',30],lat:['29.380','29.389'],lon
  const $=id=>els[id]||(els[id]={value:'',max:''});
  Object.assign(els,{hs:{value:'2024-04-10'},hh:{value:'17'},hours:{value:'5'},ww0:{value:'2025-10-01'},ww1:{value:'2025-11-30'},dw0:{value:'2026-03-01'},dw1:{value:'2026-04-30'}});
  const c=vm.createContext({console,$,TemporalSync:T,WeatherIntervals:WX,Date,URL,Float32Array,Map,Number,Math});
- vm.runInContext(`const daysBetween=(a,b)=>Math.round((Date.parse(b)-Date.parse(a))/864e5);var MODE='hind',temporalAnchor='2026-04-10',liveStart=${now};const clamp=(v,a,b)=>Math.min(b,Math.max(a,v)),isoD=ms=>new Date(ms).toISOString().slice(0,10),addD=(d,n)=>isoD(Date.parse(d)+n*864e5);`,c);
+ vm.runInContext(`const daysBetween=(a,b)=>Math.round((Date.parse(b)-Date.parse(a))/864e5);var seasonTemplates={},MODE='hind',temporalAnchor='2026-04-10',liveStart=${now};const clamp=(v,a,b)=>Math.min(b,Math.max(a,v)),isoD=ms=>new Date(ms).toISOString().slice(0,10),addD=(d,n)=>isoD(Date.parse(d)+n*864e5);`,c);
  vm.runInContext(source.slice(source.indexOf('function syncTemporal('),source.indexOf('function eventStart(')),c);
  vm.runInContext('syncTemporal()',c);assert.equal($('ww0').value,'2023-10-01');assert.equal($('lst1').value,'2024-04-09');assert.equal($('nm0').value,'2024-03-11');assert.equal($('met0').value,'2024-04-10');
  $('hs').value='2025-05-15';vm.runInContext('syncTemporal()',c);assert.equal($('lst1').value,'2025-05-14');assert.equal($('nm1').value,'2025-05-14');assert.equal($('hours').max,8760);
+ $('hs').value='2026-04-10';vm.runInContext('syncTemporal()',c);assert.equal($('ww0').value,'2025-10-01');assert.equal($('dw0').value,'2026-03-01');
  console.log('PASS production input synchronization overwrites stale years and preserves relative windows');
  store.clear();calls.length=0;
  const legacyURL='https://archive-api.open-meteo.com/v1/archive?latitude=29.380,29.389&longitude=79.440,79.450&hourly='+WX.vars+'&wind_speed_unit=ms&timezone=UTC&start_date=2024-04-07&end_date=2024-04-20';
